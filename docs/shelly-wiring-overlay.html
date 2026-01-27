@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Shelly Plus RGBW PM - Wiring Guide</title>
+  <style>
+    body {
+      background: #0a0a0f;
+      color: #eee;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      padding: 30px;
+      margin: 0;
+    }
+    h1 { color: #00d9ff; margin-bottom: 5px; }
+    .subtitle { color: #888; margin-bottom: 30px; }
+    .diagram-wrapper {
+      position: relative;
+      display: inline-block;
+      margin: 20px 0;
+    }
+    .diagram-wrapper img {
+      width: 700px;
+      height: auto;
+      border-radius: 12px;
+      border: 3px solid #333;
+    }
+    .overlay-svg {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+    .legend {
+      background: #1a1a2e;
+      border-radius: 12px;
+      padding: 25px;
+      margin: 30px 0;
+      border: 1px solid #333;
+      max-width: 700px;
+    }
+    .legend h3 {
+      margin-top: 0;
+      color: #00d9ff;
+    }
+    .wire-row {
+      display: flex;
+      align-items: center;
+      margin: 15px 0;
+      padding: 12px;
+      background: #2a2a4a;
+      border-radius: 8px;
+    }
+    .wire-color {
+      width: 40px;
+      height: 12px;
+      border-radius: 6px;
+      margin-right: 15px;
+      border: 2px solid #fff;
+    }
+    .wire-label {
+      flex: 1;
+    }
+    .wire-terminal {
+      font-weight: bold;
+      font-size: 18px;
+      padding: 5px 12px;
+      border-radius: 6px;
+      margin-left: 10px;
+    }
+    .success {
+      background: #1a4a2a;
+      border-left: 4px solid #4ade80;
+      padding: 15px 20px;
+      margin: 20px 0;
+      border-radius: 0 8px 8px 0;
+      max-width: 700px;
+    }
+    .warning {
+      background: #4a2a2a;
+      border-left: 4px solid #ff6b6b;
+      padding: 15px 20px;
+      margin: 20px 0;
+      border-radius: 0 8px 8px 0;
+      max-width: 700px;
+    }
+    .pulse {
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.5; }
+    }
+  </style>
+</head>
+<body>
+
+  <h1>Your Shelly Plus RGBW PM - Wiring Guide</h1>
+  <p class="subtitle">Bedroom Light Control - Only 3 terminals needed!</p>
+
+  <div class="diagram-wrapper">
+    <img src="shelly-rgbwpm.jpg" alt="Shelly Plus RGBW PM">
+    <svg class="overlay-svg" viewBox="0 0 700 700" preserveAspectRatio="xMidYMid meet">
+
+      <!-- Terminal positions (approximated from image) -->
+      <!-- From left to right: W, B, G, R, I4, I3, I2, I1, GND(⏊), + -->
+
+      <!-- ============================== -->
+      <!-- TERMINAL: + (DC Power Input) -->
+      <!-- ============================== -->
+      <circle cx="620" cy="95" r="22" fill="none" stroke="#ff6b6b" stroke-width="5" class="pulse"/>
+      <line x1="620" y1="120" x2="620" y2="200" stroke="#ff6b6b" stroke-width="4"/>
+      <rect x="520" y="200" width="200" height="70" rx="8" fill="#ff6b6b" opacity="0.95"/>
+      <text x="620" y="225" text-anchor="middle" fill="#fff" font-size="16" font-weight="bold">+ (12V IN)</text>
+      <text x="620" y="248" text-anchor="middle" fill="#fff" font-size="12">← Red wire from</text>
+      <text x="620" y="263" text-anchor="middle" fill="#fff" font-size="12">BED fuse terminal</text>
+
+      <!-- ============================== -->
+      <!-- TERMINAL: ⏊ (Ground) -->
+      <!-- ============================== -->
+      <circle cx="565" cy="95" r="22" fill="none" stroke="#60a5fa" stroke-width="5" class="pulse"/>
+      <line x1="565" y1="120" x2="565" y2="300" stroke="#60a5fa" stroke-width="4"/>
+      <rect x="440" y="300" width="200" height="70" rx="8" fill="#60a5fa" opacity="0.95"/>
+      <text x="540" y="325" text-anchor="middle" fill="#fff" font-size="16" font-weight="bold">⏊ (GROUND)</text>
+      <text x="540" y="348" text-anchor="middle" fill="#fff" font-size="12">← Black wire from</text>
+      <text x="540" y="363" text-anchor="middle" fill="#fff" font-size="12">ground bus</text>
+
+      <!-- ============================== -->
+      <!-- TERMINAL: R / O1 (Output to Light) -->
+      <!-- ============================== -->
+      <circle cx="340" cy="95" r="22" fill="none" stroke="#4ade80" stroke-width="5" class="pulse"/>
+      <line x1="340" y1="120" x2="340" y2="400" stroke="#4ade80" stroke-width="4"/>
+      <rect x="200" y="400" width="280" height="85" rx="8" fill="#4ade80" opacity="0.95"/>
+      <text x="340" y="428" text-anchor="middle" fill="#000" font-size="16" font-weight="bold">R / O1 (OUTPUT)</text>
+      <text x="340" y="453" text-anchor="middle" fill="#000" font-size="12">← Original BED wire</text>
+      <text x="340" y="470" text-anchor="middle" fill="#000" font-size="12">(goes to bedroom lights)</text>
+
+      <!-- ============================== -->
+      <!-- Labels for unused terminals -->
+      <!-- ============================== -->
+
+      <!-- W / O4 -->
+      <text x="115" y="75" text-anchor="middle" fill="#666" font-size="11">W/O4</text>
+      <text x="115" y="55" text-anchor="middle" fill="#444" font-size="9">(spare)</text>
+
+      <!-- B / O3 -->
+      <text x="168" y="75" text-anchor="middle" fill="#666" font-size="11">B/O3</text>
+      <text x="168" y="55" text-anchor="middle" fill="#444" font-size="9">(spare)</text>
+
+      <!-- G / O2 -->
+      <text x="225" y="75" text-anchor="middle" fill="#666" font-size="11">G/O2</text>
+      <text x="225" y="55" text-anchor="middle" fill="#444" font-size="9">(spare)</text>
+
+      <!-- I4, I3, I2, I1 - inputs -->
+      <text x="395" y="75" text-anchor="middle" fill="#666" font-size="10">I4</text>
+      <text x="450" y="75" text-anchor="middle" fill="#666" font-size="10">I3</text>
+      <text x="508" y="75" text-anchor="middle" fill="#666" font-size="10">I2</text>
+      <text x="508" y="55" text-anchor="middle" fill="#444" font-size="9">inputs</text>
+
+      <!-- ============================== -->
+      <!-- Big numbered circles -->
+      <!-- ============================== -->
+
+      <!-- Step 1 -->
+      <circle cx="620" cy="165" r="20" fill="#ff6b6b"/>
+      <text x="620" y="172" text-anchor="middle" fill="#fff" font-size="18" font-weight="bold">1</text>
+
+      <!-- Step 2 -->
+      <circle cx="610" cy="300" r="20" fill="#60a5fa"/>
+      <text x="610" y="307" text-anchor="middle" fill="#fff" font-size="18" font-weight="bold">2</text>
+
+      <!-- Step 3 -->
+      <circle cx="450" cy="430" r="20" fill="#4ade80"/>
+      <text x="450" y="437" text-anchor="middle" fill="#000" font-size="18" font-weight="bold">3</text>
+
+      <!-- ============================== -->
+      <!-- Arrow showing which terminals to use -->
+      <!-- ============================== -->
+      <rect x="40" y="520" width="280" height="120" rx="10" fill="#1a2a4a" stroke="#00d9ff" stroke-width="2"/>
+      <text x="180" y="550" text-anchor="middle" fill="#00d9ff" font-size="14" font-weight="bold">ONLY USE THESE 3:</text>
+      <text x="180" y="580" text-anchor="middle" fill="#ff6b6b" font-size="13">① + (power in)</text>
+      <text x="180" y="605" text-anchor="middle" fill="#60a5fa" font-size="13">② ⏊ (ground)</text>
+      <text x="180" y="630" text-anchor="middle" fill="#4ade80" font-size="13">③ R/O1 (output to light)</text>
+
+    </svg>
+  </div>
+
+  <div class="legend">
+    <h3>Wiring Summary</h3>
+
+    <div class="wire-row">
+      <div class="wire-color" style="background: #ff6b6b;"></div>
+      <div class="wire-label">
+        <strong>Step 1:</strong> Red 18 AWG wire from BED fuse terminal
+      </div>
+      <div class="wire-terminal" style="background: #ff6b6b; color: #fff;">+</div>
+    </div>
+
+    <div class="wire-row">
+      <div class="wire-color" style="background: #60a5fa;"></div>
+      <div class="wire-label">
+        <strong>Step 2:</strong> Black 18 AWG wire from ground bus
+      </div>
+      <div class="wire-terminal" style="background: #60a5fa; color: #fff;">⏊</div>
+    </div>
+
+    <div class="wire-row">
+      <div class="wire-color" style="background: #4ade80;"></div>
+      <div class="wire-label">
+        <strong>Step 3:</strong> Original BED wire (to bedroom lights)
+      </div>
+      <div class="wire-terminal" style="background: #4ade80; color: #000;">R / O1</div>
+    </div>
+  </div>
+
+  <div class="success">
+    <strong>That's it!</strong> Just 3 wires into 3 terminals:
+    <ul style="margin: 10px 0 0 0;">
+      <li><strong>+</strong> = Power in (12V from fuse)</li>
+      <li><strong>⏊</strong> = Ground</li>
+      <li><strong>R/O1</strong> = Output to your bedroom lights</li>
+    </ul>
+  </div>
+
+  <div class="warning">
+    <strong>Note:</strong> The other terminals (W, B, G, I1-I4) are for:
+    <ul style="margin: 10px 0 0 0;">
+      <li><strong>W, B, G (O4, O3, O2)</strong> - Extra output channels for other lights later</li>
+      <li><strong>I1-I4</strong> - Physical switch inputs (optional - for wall switches)</li>
+    </ul>
+    You don't need these for basic bedroom light control!
+  </div>
+
+  <h2 style="color: #ffd93d; margin-top: 40px;">Terminal Screw Tips</h2>
+  <div class="legend">
+    <ol style="margin: 0; padding-left: 20px; line-height: 2;">
+      <li>Use a small flathead screwdriver</li>
+      <li>Loosen the screw, insert stripped wire (~5mm bare)</li>
+      <li>Tighten firmly - give it a gentle tug to confirm it's secure</li>
+      <li>Make sure no bare copper is exposed outside the terminal</li>
+    </ol>
+  </div>
+
+</body>
+</html>

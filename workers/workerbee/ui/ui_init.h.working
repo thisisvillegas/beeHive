@@ -1,0 +1,71 @@
+#ifndef UI_INIT_H
+#define UI_INIT_H
+
+#include <Arduino.h>
+#include <lvgl.h>
+#include "config.h"
+
+/**
+ * UI Manager - LVGL + Hosyond LCD Integration
+ */
+
+class UIManager {
+public:
+    UIManager();
+
+    void begin();
+    void update();
+    void setBrightness(uint8_t level);
+
+    // Tab navigation
+    void showConsoleTab();
+    void showDevicesTab();
+    void showDashboardTab();
+    void showGamepadTab();
+
+    // Get LVGL objects for updating
+    lv_obj_t* getConsoleList();
+    lv_obj_t* getDeviceGrid();
+    lv_obj_t* getDashboardContainer();
+    lv_obj_t* getGamepadContainer();
+
+private:
+    // LVGL display buffer
+    static lv_disp_draw_buf_t drawBuf;
+    static lv_color_t buf1[DISPLAY_WIDTH * 40];
+    static lv_color_t buf2[DISPLAY_WIDTH * 40];
+
+    // LVGL drivers
+    static lv_disp_drv_t dispDrv;
+    static lv_indev_drv_t indevDrv;
+
+    // UI elements
+    lv_obj_t* tabview;
+    lv_obj_t* tabConsole;
+    lv_obj_t* tabDevices;
+    lv_obj_t* tabDashboard;
+    lv_obj_t* tabGamepad;
+
+    lv_obj_t* consoleList;
+    lv_obj_t* deviceGrid;
+    lv_obj_t* dashboardContainer;
+    lv_obj_t* gamepadContainer;
+
+    // Setup functions
+    void setupDisplay();
+    void setupTouch();
+    void setupLVGL();
+    void createTabs();
+    void createConsoleScreen();
+    void createDevicesScreen();
+    void createDashboardScreen();
+    void createGamepadScreen();
+
+    // LVGL callbacks
+    static void displayFlush(lv_disp_drv_t* drv, const lv_area_t* area, lv_color_t* color_p);
+    static void touchpadRead(lv_indev_drv_t* drv, lv_indev_data_t* data);
+};
+
+extern UIManager uiManager;
+
+#endif // UI_INIT_H

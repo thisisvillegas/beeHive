@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>RV Light Switch - Smart Wiring Diagram</title>
+  <style>
+    body {
+      background: #1a1a2e;
+      color: #eee;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      padding: 40px;
+      margin: 0;
+    }
+    h1 { color: #00d9ff; margin-bottom: 10px; }
+    h2 { color: #ff6b6b; margin-top: 40px; }
+    .subtitle { color: #888; margin-bottom: 30px; }
+    .diagram-container {
+      background: #0d0d1a;
+      border-radius: 16px;
+      padding: 30px;
+      margin: 20px 0;
+      border: 1px solid #333;
+    }
+    svg { max-width: 100%; height: auto; }
+    .note {
+      background: #2a2a4a;
+      border-left: 4px solid #00d9ff;
+      padding: 15px 20px;
+      margin: 20px 0;
+      border-radius: 0 8px 8px 0;
+    }
+    .warning {
+      background: #4a2a2a;
+      border-left: 4px solid #ff6b6b;
+      padding: 15px 20px;
+      margin: 20px 0;
+      border-radius: 0 8px 8px 0;
+    }
+    .parts-list {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+      gap: 15px;
+      margin: 20px 0;
+    }
+    .part {
+      background: #2a2a4a;
+      padding: 15px;
+      border-radius: 8px;
+      border: 1px solid #444;
+    }
+    .part-name { color: #00d9ff; font-weight: bold; }
+    .part-desc { color: #aaa; font-size: 14px; margin-top: 5px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin: 20px 0;
+    }
+    th, td {
+      padding: 12px;
+      text-align: left;
+      border-bottom: 1px solid #333;
+    }
+    th { color: #00d9ff; background: #1a1a3a; }
+    .success { color: #4ade80; }
+    .info { color: #60a5fa; }
+  </style>
+</head>
+<body>
+  <h1>RV Light Switch → Smart + Manual Control</h1>
+  <p class="subtitle">ESP32-C3 + Relay Module — Parallel Wiring for Failsafe Operation</p>
+
+  <div class="note">
+    <strong>Goal:</strong> Control the light via WiFi/MQTT, but keep the physical switch working even if the ESP32 dies.
+  </div>
+
+  <h2>Wiring Diagram</h2>
+  <div class="diagram-container">
+    <svg viewBox="0 0 800 400" xmlns="http://www.w3.org/2000/svg">
+      <!-- Background grid -->
+      <defs>
+        <pattern id="grid" width="20" height="20" patternUnits="userSpaceOnUse">
+          <path d="M 20 0 L 0 0 0 20" fill="none" stroke="#222" stroke-width="0.5"/>
+        </pattern>
+      </defs>
+      <rect width="800" height="400" fill="url(#grid)"/>
+
+      <!-- 12V Power Source -->
+      <rect x="30" y="160" width="80" height="80" rx="8" fill="#4a1a1a" stroke="#ff6b6b" stroke-width="2"/>
+      <text x="70" y="195" text-anchor="middle" fill="#ff6b6b" font-weight="bold" font-size="14">12V DC</text>
+      <text x="70" y="215" text-anchor="middle" fill="#ff6b6b" font-size="12">Power</text>
+      <text x="70" y="232" text-anchor="middle" fill="#888" font-size="10">(RV Battery)</text>
+
+      <!-- Main power line out -->
+      <line x1="110" y1="200" x2="180" y2="200" stroke="#ff6b6b" stroke-width="3"/>
+
+      <!-- Split point -->
+      <circle cx="180" cy="200" r="6" fill="#ff6b6b"/>
+
+      <!-- Upper path - Physical Switch -->
+      <line x1="180" y1="200" x2="180" y2="100" stroke="#ffaa00" stroke-width="3"/>
+      <line x1="180" y1="100" x2="280" y2="100" stroke="#ffaa00" stroke-width="3"/>
+
+      <!-- Physical Switch -->
+      <rect x="280" y="70" width="120" height="60" rx="8" fill="#1a3a1a" stroke="#4ade80" stroke-width="2"/>
+      <text x="340" y="95" text-anchor="middle" fill="#4ade80" font-weight="bold" font-size="12">PHYSICAL</text>
+      <text x="340" y="112" text-anchor="middle" fill="#4ade80" font-size="12">SWITCH</text>
+      <text x="340" y="125" text-anchor="middle" fill="#666" font-size="9">(existing)</text>
+
+      <line x1="400" y1="100" x2="500" y2="100" stroke="#ffaa00" stroke-width="3"/>
+
+      <!-- Lower path - Relay -->
+      <line x1="180" y1="200" x2="180" y2="300" stroke="#00d9ff" stroke-width="3"/>
+      <line x1="180" y1="300" x2="280" y2="300" stroke="#00d9ff" stroke-width="3"/>
+
+      <!-- Relay Module -->
+      <rect x="280" y="260" width="120" height="80" rx="8" fill="#1a1a4a" stroke="#00d9ff" stroke-width="2"/>
+      <text x="340" y="290" text-anchor="middle" fill="#00d9ff" font-weight="bold" font-size="12">RELAY</text>
+      <text x="340" y="307" text-anchor="middle" fill="#00d9ff" font-size="11">MODULE</text>
+      <text x="340" y="325" text-anchor="middle" fill="#666" font-size="9">(NO terminal)</text>
+
+      <line x1="400" y1="300" x2="500" y2="300" stroke="#00d9ff" stroke-width="3"/>
+
+      <!-- Merge point -->
+      <circle cx="500" cy="200" r="6" fill="#4ade80"/>
+      <line x1="500" y1="100" x2="500" y2="200" stroke="#ffaa00" stroke-width="3"/>
+      <line x1="500" y1="300" x2="500" y2="200" stroke="#00d9ff" stroke-width="3"/>
+
+      <!-- To Light -->
+      <line x1="500" y1="200" x2="580" y2="200" stroke="#4ade80" stroke-width="3"/>
+
+      <!-- Light Bulb -->
+      <circle cx="620" cy="200" r="35" fill="#3a3a1a" stroke="#ffd93d" stroke-width="2"/>
+      <text x="620" y="195" text-anchor="middle" fill="#ffd93d" font-size="24">💡</text>
+      <text x="620" y="255" text-anchor="middle" fill="#ffd93d" font-weight="bold" font-size="12">RV LIGHT</text>
+
+      <!-- Ground return -->
+      <line x1="655" y1="200" x2="720" y2="200" stroke="#666" stroke-width="3"/>
+      <line x1="720" y1="200" x2="720" y2="350" stroke="#666" stroke-width="3"/>
+      <line x1="720" y1="350" x2="70" y2="350" stroke="#666" stroke-width="3"/>
+      <line x1="70" y1="350" x2="70" y2="240" stroke="#666" stroke-width="3"/>
+      <text x="400" y="370" text-anchor="middle" fill="#666" font-size="11">GROUND (return to 12V negative)</text>
+
+      <!-- ESP32 controlling relay -->
+      <rect x="260" y="160" width="100" height="50" rx="6" fill="#2a1a3a" stroke="#a855f7" stroke-width="2"/>
+      <text x="310" y="182" text-anchor="middle" fill="#a855f7" font-weight="bold" font-size="10">ESP32-C3</text>
+      <text x="310" y="198" text-anchor="middle" fill="#a855f7" font-size="9">(TinyBee)</text>
+
+      <!-- Control line from ESP to Relay -->
+      <line x1="310" y1="210" x2="310" y2="260" stroke="#a855f7" stroke-width="2" stroke-dasharray="5,3"/>
+      <text x="318" y="238" fill="#a855f7" font-size="9">GPIO</text>
+
+      <!-- WiFi symbol -->
+      <text x="310" y="148" text-anchor="middle" fill="#a855f7" font-size="16">📶</text>
+
+      <!-- Labels -->
+      <text x="160" y="80" fill="#ffaa00" font-size="11" font-weight="bold">PATH A: Manual</text>
+      <text x="160" y="335" fill="#00d9ff" font-size="11" font-weight="bold">PATH B: Smart</text>
+
+      <!-- Legend -->
+      <rect x="580" y="30" width="200" height="100" rx="8" fill="#1a1a2a" stroke="#444" stroke-width="1"/>
+      <text x="680" y="52" text-anchor="middle" fill="#888" font-size="11" font-weight="bold">LEGEND</text>
+      <line x1="595" y1="68" x2="625" y2="68" stroke="#ffaa00" stroke-width="3"/>
+      <text x="635" y="72" fill="#ffaa00" font-size="10">Manual path</text>
+      <line x1="595" y1="88" x2="625" y2="88" stroke="#00d9ff" stroke-width="3"/>
+      <text x="635" y="92" fill="#00d9ff" font-size="10">Smart path</text>
+      <line x1="595" y1="108" x2="625" y2="108" stroke="#a855f7" stroke-width="2" stroke-dasharray="5,3"/>
+      <text x="635" y="112" fill="#a855f7" font-size="10">Control signal</text>
+    </svg>
+  </div>
+
+  <div class="note">
+    <strong>How it works:</strong> Either path can complete the circuit. Physical switch works even if ESP32 is unplugged/dead.
+    ESP32 can turn on light even if physical switch is off.
+  </div>
+
+  <h2>Parts Needed</h2>
+  <div class="parts-list">
+    <div class="part">
+      <div class="part-name">ESP32-C3 Mini</div>
+      <div class="part-desc">Your TinyBee board - reads button state, controls relay via GPIO</div>
+    </div>
+    <div class="part">
+      <div class="part-name">Relay Module (5V or 3.3V)</div>
+      <div class="part-desc">Your 2-channel relay works. Use the NO (Normally Open) terminals</div>
+    </div>
+    <div class="part">
+      <div class="part-name">USB Power for ESP32</div>
+      <div class="part-desc">5V USB adapter or tap from RV's USB port</div>
+    </div>
+    <div class="part">
+      <div class="part-name">Wire</div>
+      <div class="part-desc">18-22 AWG for 12V light circuit, smaller for signal wires</div>
+    </div>
+  </div>
+
+  <h2>Relay Module Wiring</h2>
+  <div class="diagram-container">
+    <svg viewBox="0 0 700 300" xmlns="http://www.w3.org/2000/svg">
+      <rect width="700" height="300" fill="url(#grid)"/>
+
+      <!-- Relay Module -->
+      <rect x="250" y="50" width="200" height="200" rx="10" fill="#1a2a4a" stroke="#00d9ff" stroke-width="3"/>
+      <text x="350" y="85" text-anchor="middle" fill="#00d9ff" font-weight="bold" font-size="16">RELAY MODULE</text>
+
+      <!-- Input side (left) -->
+      <text x="270" y="115" fill="#aaa" font-size="11">Input Side</text>
+
+      <circle cx="280" cy="140" r="8" fill="#333" stroke="#ff6b6b" stroke-width="2"/>
+      <text x="300" y="144" fill="#ff6b6b" font-size="12">VCC</text>
+
+      <circle cx="280" cy="170" r="8" fill="#333" stroke="#666" stroke-width="2"/>
+      <text x="300" y="174" fill="#888" font-size="12">GND</text>
+
+      <circle cx="280" cy="200" r="8" fill="#333" stroke="#a855f7" stroke-width="2"/>
+      <text x="300" y="204" fill="#a855f7" font-size="12">IN1</text>
+
+      <!-- Output side (right) -->
+      <text x="370" y="115" fill="#aaa" font-size="11">Output Side</text>
+
+      <circle cx="420" cy="140" r="8" fill="#333" stroke="#ffaa00" stroke-width="2"/>
+      <text x="380" y="144" fill="#ffaa00" font-size="12" text-anchor="end">COM</text>
+
+      <circle cx="420" cy="170" r="8" fill="#333" stroke="#4ade80" stroke-width="2"/>
+      <text x="380" y="174" fill="#4ade80" font-size="12" text-anchor="end">NO</text>
+
+      <circle cx="420" cy="200" r="8" fill="#333" stroke="#666" stroke-width="2"/>
+      <text x="380" y="204" fill="#888" font-size="12" text-anchor="end">NC</text>
+
+      <!-- ESP32 -->
+      <rect x="50" y="120" width="120" height="100" rx="8" fill="#2a1a3a" stroke="#a855f7" stroke-width="2"/>
+      <text x="110" y="150" text-anchor="middle" fill="#a855f7" font-weight="bold" font-size="12">ESP32-C3</text>
+      <text x="110" y="170" text-anchor="middle" fill="#a855f7" font-size="10">TinyBee</text>
+      <text x="110" y="190" text-anchor="middle" fill="#666" font-size="9">5V  GND  GPIO6</text>
+
+      <!-- Connections from ESP32 to Relay -->
+      <line x1="170" y1="145" x2="272" y2="140" stroke="#ff6b6b" stroke-width="2"/>
+      <text x="215" y="135" fill="#ff6b6b" font-size="9">5V</text>
+
+      <line x1="170" y1="170" x2="272" y2="170" stroke="#666" stroke-width="2"/>
+      <text x="215" y="165" fill="#666" font-size="9">GND</text>
+
+      <line x1="170" y1="195" x2="272" y2="200" stroke="#a855f7" stroke-width="2"/>
+      <text x="215" y="205" fill="#a855f7" font-size="9">GPIO 6</text>
+
+      <!-- Output connections -->
+      <line x1="428" y1="140" x2="550" y2="140" stroke="#ffaa00" stroke-width="3"/>
+      <text x="560" y="144" fill="#ffaa00" font-size="11">→ From 12V+</text>
+
+      <line x1="428" y1="170" x2="550" y2="170" stroke="#4ade80" stroke-width="3"/>
+      <text x="560" y="174" fill="#4ade80" font-size="11">→ To Light +</text>
+
+      <text x="560" y="204" fill="#666" font-size="11">NC = Not used</text>
+
+      <!-- Notes -->
+      <text x="350" y="275" text-anchor="middle" fill="#888" font-size="11">COM = Common (power in) | NO = Normally Open (power out when triggered)</text>
+    </svg>
+  </div>
+
+  <h2>Wiring Steps</h2>
+  <table>
+    <tr>
+      <th>#</th>
+      <th>Connection</th>
+      <th>From</th>
+      <th>To</th>
+    </tr>
+    <tr>
+      <td class="info">1</td>
+      <td>Relay power</td>
+      <td>ESP32 5V pin</td>
+      <td>Relay VCC</td>
+    </tr>
+    <tr>
+      <td class="info">2</td>
+      <td>Relay ground</td>
+      <td>ESP32 GND pin</td>
+      <td>Relay GND</td>
+    </tr>
+    <tr>
+      <td class="info">3</td>
+      <td>Relay control</td>
+      <td>ESP32 GPIO 6</td>
+      <td>Relay IN1</td>
+    </tr>
+    <tr>
+      <td class="success">4</td>
+      <td>12V input to relay</td>
+      <td>12V+ (same wire feeding physical switch)</td>
+      <td>Relay COM</td>
+    </tr>
+    <tr>
+      <td class="success">5</td>
+      <td>Relay output</td>
+      <td>Relay NO</td>
+      <td>Light + (same wire physical switch outputs to)</td>
+    </tr>
+  </table>
+
+  <div class="warning">
+    <strong>Important:</strong> The relay's COM and NO terminals handle the 12V light power.
+    The ESP32 side (VCC, GND, IN1) is separate low-voltage control. Don't mix them up!
+  </div>
+
+  <h2>How Each Scenario Works</h2>
+  <table>
+    <tr>
+      <th>Physical Switch</th>
+      <th>Relay (ESP32)</th>
+      <th>Light</th>
+    </tr>
+    <tr>
+      <td>OFF</td>
+      <td>OFF</td>
+      <td>❌ OFF</td>
+    </tr>
+    <tr>
+      <td class="success">ON</td>
+      <td>OFF</td>
+      <td class="success">✅ ON (manual)</td>
+    </tr>
+    <tr>
+      <td>OFF</td>
+      <td class="info">ON</td>
+      <td class="info">✅ ON (smart)</td>
+    </tr>
+    <tr>
+      <td class="success">ON</td>
+      <td class="info">ON</td>
+      <td class="success">✅ ON (both)</td>
+    </tr>
+  </table>
+
+  <div class="note">
+    <strong>Failsafe:</strong> If ESP32 loses power or WiFi dies, the physical switch still works normally!
+  </div>
+
+  <h2>Optional: Monitor Physical Switch State</h2>
+  <p>If you also want the ESP32 to <em>know</em> when the physical switch is toggled (for state sync), add a wire from the switch output to an ESP32 GPIO input. This lets the dashboard show the true light state.</p>
+
+</body>
+</html>

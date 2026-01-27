@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>WFCO 8930/50 - Shelly Wiring Overlay</title>
+  <style>
+    body {
+      background: #0a0a0f;
+      color: #eee;
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      padding: 20px;
+      margin: 0;
+    }
+    h1 { color: #00d9ff; margin-bottom: 5px; }
+    .subtitle { color: #888; margin-bottom: 20px; }
+    .diagram-wrapper {
+      position: relative;
+      display: inline-block;
+      margin: 20px 0;
+    }
+    .diagram-wrapper img {
+      max-width: 100%;
+      height: auto;
+      border-radius: 8px;
+      border: 2px solid #333;
+    }
+    .overlay-svg {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+    .legend {
+      background: #1a1a2e;
+      border-radius: 12px;
+      padding: 20px;
+      margin: 20px 0;
+      border: 1px solid #333;
+      display: inline-block;
+    }
+    .legend-item {
+      display: flex;
+      align-items: center;
+      margin: 10px 0;
+    }
+    .legend-color {
+      width: 30px;
+      height: 8px;
+      border-radius: 4px;
+      margin-right: 12px;
+    }
+    .note {
+      background: #1a2a4a;
+      border-left: 4px solid #00d9ff;
+      padding: 15px 20px;
+      margin: 20px 0;
+      border-radius: 0 8px 8px 0;
+      max-width: 800px;
+    }
+    .warning {
+      background: #4a2a2a;
+      border-left: 4px solid #ff6b6b;
+      padding: 15px 20px;
+      margin: 20px 0;
+      border-radius: 0 8px 8px 0;
+      max-width: 800px;
+    }
+    .callout {
+      font-weight: bold;
+    }
+    .red { color: #ff6b6b; }
+    .green { color: #4ade80; }
+    .blue { color: #60a5fa; }
+    .yellow { color: #ffd93d; }
+    .pulse {
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+  </style>
+</head>
+<body>
+  <h1>WFCO 8930/50 - Shelly Wiring Points</h1>
+  <p class="subtitle">Your Cherokee's power center with Shelly connection points highlighted</p>
+
+  <div class="diagram-wrapper">
+    <img src="wfco-diagram.jpg" alt="WFCO 8930/50 Wiring Diagram">
+    <svg class="overlay-svg" viewBox="0 0 1200 900" preserveAspectRatio="xMidYMid meet">
+      <!-- The image is roughly 1200x900 based on aspect ratio -->
+
+      <!-- ============================================ -->
+      <!-- HIGHLIGHT: DC FUSE PANEL AREA (Bed fuse) -->
+      <!-- ============================================ -->
+      <!-- The DC fuses are in the lower-middle-right area of the diagram -->
+
+      <!-- Circle around the DC fuse area -->
+      <ellipse cx="680" cy="680" rx="120" ry="80"
+               fill="none" stroke="#ff6b6b" stroke-width="4"
+               stroke-dasharray="10,5" class="pulse"/>
+
+      <!-- Label for DC fuses -->
+      <rect x="520" y="550" width="180" height="35" rx="6" fill="#ff6b6b" opacity="0.9"/>
+      <text x="610" y="573" text-anchor="middle" fill="#fff" font-size="14" font-weight="bold">
+        1. TAP +12V HERE
+      </text>
+      <text x="610" y="590" text-anchor="middle" fill="#fff" font-size="10">
+        (Bed fuse - load side)
+      </text>
+
+      <!-- Arrow pointing to fuse area -->
+      <path d="M 610 585 L 610 620 L 650 650"
+            fill="none" stroke="#ff6b6b" stroke-width="3"
+            marker-end="url(#arrowRed)"/>
+
+      <!-- ============================================ -->
+      <!-- HIGHLIGHT: NEGATIVE TERMINAL BAR (Ground) -->
+      <!-- ============================================ -->
+      <!-- The negative terminal bar is on the left side -->
+
+      <ellipse cx="280" cy="650" rx="60" ry="100"
+               fill="none" stroke="#60a5fa" stroke-width="4"
+               stroke-dasharray="10,5" class="pulse"/>
+
+      <!-- Label for ground -->
+      <rect x="100" y="520" width="180" height="35" rx="6" fill="#60a5fa" opacity="0.9"/>
+      <text x="190" y="543" text-anchor="middle" fill="#fff" font-size="14" font-weight="bold">
+        2. GROUND HERE
+      </text>
+      <text x="190" y="560" text-anchor="middle" fill="#fff" font-size="10">
+        (Negative terminal bar)
+      </text>
+
+      <!-- Arrow pointing to ground bar -->
+      <path d="M 230 555 L 260 600"
+            fill="none" stroke="#60a5fa" stroke-width="3"
+            marker-end="url(#arrowBlue)"/>
+
+      <!-- ============================================ -->
+      <!-- SHELLY PLACEMENT SUGGESTION -->
+      <!-- ============================================ -->
+
+      <rect x="850" y="450" width="160" height="120" rx="12"
+            fill="#1a2a4a" stroke="#00d9ff" stroke-width="4" opacity="0.95"/>
+      <text x="930" y="485" text-anchor="middle" fill="#00d9ff" font-size="14" font-weight="bold">
+        SHELLY
+      </text>
+      <text x="930" y="505" text-anchor="middle" fill="#00d9ff" font-size="12">
+        PLUS RGBW PM
+      </text>
+      <text x="930" y="530" text-anchor="middle" fill="#888" font-size="10">
+        Mount nearby with
+      </text>
+      <text x="930" y="545" text-anchor="middle" fill="#888" font-size="10">
+        velcro or zip ties
+      </text>
+
+      <!-- Wires from fuse to Shelly -->
+      <path d="M 750 680 Q 800 680 850 530"
+            fill="none" stroke="#ff6b6b" stroke-width="5" stroke-linecap="round"/>
+      <text x="820" y="620" fill="#ff6b6b" font-size="11" font-weight="bold"
+            transform="rotate(-50 820 620)">+12V (red)</text>
+
+      <!-- Wire from ground to Shelly -->
+      <path d="M 340 650 Q 500 500 850 510"
+            fill="none" stroke="#60a5fa" stroke-width="5" stroke-linecap="round"/>
+      <text x="550" y="530" fill="#60a5fa" font-size="11" font-weight="bold">GND (black)</text>
+
+      <!-- Wire from Shelly to light (output) -->
+      <path d="M 1010 500 L 1100 500 L 1100 300"
+            fill="none" stroke="#4ade80" stroke-width="5" stroke-linecap="round"
+            marker-end="url(#arrowGreen)"/>
+      <text x="1110" y="400" fill="#4ade80" font-size="11" font-weight="bold"
+            transform="rotate(-90 1110 400)">To Bedroom Light</text>
+
+      <!-- Output label on Shelly -->
+      <rect x="980" y="550" width="50" height="20" rx="4" fill="#4ade80"/>
+      <text x="1005" y="564" text-anchor="middle" fill="#000" font-size="10" font-weight="bold">O1</text>
+
+      <!-- ============================================ -->
+      <!-- CONNECTION POINTS ON SHELLY -->
+      <!-- ============================================ -->
+
+      <!-- DC+ input point -->
+      <circle cx="870" cy="530" r="8" fill="#ff6b6b" stroke="#fff" stroke-width="2"/>
+      <text x="885" y="535" fill="#ff6b6b" font-size="10">DC+</text>
+
+      <!-- GND input point -->
+      <circle cx="870" cy="555" r="8" fill="#60a5fa" stroke="#fff" stroke-width="2"/>
+      <text x="885" y="560" fill="#60a5fa" font-size="10">GND</text>
+
+      <!-- ============================================ -->
+      <!-- ARROW MARKERS -->
+      <!-- ============================================ -->
+      <defs>
+        <marker id="arrowRed" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+          <polygon points="0 0, 10 3.5, 0 7" fill="#ff6b6b"/>
+        </marker>
+        <marker id="arrowBlue" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+          <polygon points="0 0, 10 3.5, 0 7" fill="#60a5fa"/>
+        </marker>
+        <marker id="arrowGreen" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+          <polygon points="0 0, 10 3.5, 0 7" fill="#4ade80"/>
+        </marker>
+      </defs>
+
+      <!-- ============================================ -->
+      <!-- STEP NUMBERS -->
+      <!-- ============================================ -->
+
+      <!-- Step 1 circle -->
+      <circle cx="610" cy="555" r="18" fill="#ff6b6b"/>
+      <text x="610" y="561" text-anchor="middle" fill="#fff" font-size="14" font-weight="bold">1</text>
+
+      <!-- Step 2 circle -->
+      <circle cx="190" cy="525" r="18" fill="#60a5fa"/>
+      <text x="190" y="531" text-anchor="middle" fill="#fff" font-size="14" font-weight="bold">2</text>
+
+      <!-- Step 3 circle -->
+      <circle cx="1100" cy="280" r="18" fill="#4ade80"/>
+      <text x="1100" y="286" text-anchor="middle" fill="#000" font-size="14" font-weight="bold">3</text>
+
+    </svg>
+  </div>
+
+  <div class="legend">
+    <h3 style="margin-top: 0; color: #00d9ff;">Wiring Steps</h3>
+    <div class="legend-item">
+      <div class="legend-color" style="background: #ff6b6b;"></div>
+      <span><span class="callout red">Step 1:</span> Tap +12V from BED fuse (load side) → Shelly DC+</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color" style="background: #60a5fa;"></div>
+      <span><span class="callout blue">Step 2:</span> Ground from negative terminal bar → Shelly GND</span>
+    </div>
+    <div class="legend-item">
+      <div class="legend-color" style="background: #4ade80;"></div>
+      <span><span class="callout green">Step 3:</span> Shelly O1 output → Bedroom light positive wire</span>
+    </div>
+  </div>
+
+  <div class="note">
+    <strong>Where to physically mount the Shelly:</strong><br>
+    The Shelly Plus RGBW PM is small (43x38x14mm). Mount it:
+    <ul>
+      <li>Inside the power center enclosure (if there's room)</li>
+      <li>On the wall next to the power center</li>
+      <li>Use velcro strips or zip ties to secure it</li>
+    </ul>
+    Keep wires tidy and away from AC (shore power) side!
+  </div>
+
+  <div class="warning">
+    <strong>Important - Fuse Tap Method:</strong><br>
+    To tap the BED fuse cleanly, use an <strong>"Add-a-Fuse"</strong> adapter:
+    <ol>
+      <li>Remove the 15A BED fuse</li>
+      <li>Insert the add-a-fuse adapter in the fuse slot</li>
+      <li>Put the original 15A fuse in the adapter's "main" position</li>
+      <li>Add a 5A fuse in the adapter's "tap" position (for Shelly)</li>
+      <li>Connect your red wire to the adapter's tap terminal</li>
+    </ol>
+    This keeps the original circuit protected AND adds protection for the Shelly circuit!
+  </div>
+
+  <h2 style="color: #ff6b6b; margin-top: 40px;">Zoomed View - Fuse Panel Connection</h2>
+
+  <svg viewBox="0 0 600 300" style="max-width: 600px; background: #1a1a2e; border-radius: 12px; padding: 20px;">
+    <!-- Fuse panel representation -->
+    <rect x="50" y="50" width="250" height="200" rx="8" fill="#2a2a3a" stroke="#444" stroke-width="2"/>
+    <text x="175" y="80" text-anchor="middle" fill="#888" font-size="12">DC FUSE PANEL</text>
+
+    <!-- Bus bar -->
+    <rect x="70" y="100" width="210" height="15" rx="2" fill="#8B4513" stroke="#a0522d"/>
+    <text x="175" y="112" text-anchor="middle" fill="#ffd93d" font-size="9">+12V BUS</text>
+
+    <!-- BED Fuse -->
+    <rect x="130" y="130" width="50" height="35" rx="4" fill="#2a2a4a" stroke="#ff6b6b" stroke-width="3"/>
+    <rect x="138" y="138" width="34" height="20" rx="2" fill="#4a9fff"/>
+    <text x="155" y="152" text-anchor="middle" fill="#000" font-size="9" font-weight="bold">15A</text>
+    <text x="155" y="180" text-anchor="middle" fill="#ff6b6b" font-size="10" font-weight="bold">BED</text>
+
+    <!-- Load side wire coming out -->
+    <line x1="155" y1="165" x2="155" y2="200" stroke="#ff6b6b" stroke-width="4"/>
+    <circle cx="155" cy="200" r="6" fill="#ff6b6b"/>
+
+    <!-- Add-a-fuse representation -->
+    <rect x="120" y="205" width="70" height="30" rx="4" fill="#3a3a2a" stroke="#ffd93d" stroke-width="2"/>
+    <text x="155" y="223" text-anchor="middle" fill="#ffd93d" font-size="8">ADD-A-FUSE</text>
+
+    <!-- Tap wire to Shelly -->
+    <path d="M 190 220 L 350 220 L 350 150" fill="none" stroke="#ff6b6b" stroke-width="4" stroke-linecap="round"/>
+
+    <!-- Shelly -->
+    <rect x="320" y="80" width="100" height="70" rx="8" fill="#1a2a4a" stroke="#00d9ff" stroke-width="3"/>
+    <text x="370" y="105" text-anchor="middle" fill="#00d9ff" font-size="10" font-weight="bold">SHELLY</text>
+    <circle cx="340" cy="130" r="6" fill="#ff6b6b"/>
+    <text x="355" y="134" fill="#ff6b6b" font-size="9">DC+</text>
+
+    <!-- Ground connection -->
+    <rect x="70" y="220" width="30" height="20" rx="2" fill="#333" stroke="#555"/>
+    <text x="85" y="233" text-anchor="middle" fill="#888" font-size="7">GND</text>
+    <path d="M 100 230 L 250 230 L 250 145 L 340 145" fill="none" stroke="#60a5fa" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="340" cy="145" r="6" fill="#60a5fa"/>
+    <text x="355" y="149" fill="#60a5fa" font-size="9">GND</text>
+
+    <!-- Output -->
+    <path d="M 420 115 L 500 115" fill="none" stroke="#4ade80" stroke-width="4" marker-end="url(#arrowG2)"/>
+    <text x="500" y="110" fill="#4ade80" font-size="9">To Light</text>
+
+    <defs>
+      <marker id="arrowG2" markerWidth="10" markerHeight="7" refX="9" refY="3.5" orient="auto">
+        <polygon points="0 0, 10 3.5, 0 7" fill="#4ade80"/>
+      </marker>
+    </defs>
+  </svg>
+
+  <h2 style="color: #00d9ff; margin-top: 40px;">Shopping List</h2>
+  <table style="max-width: 600px; border-collapse: collapse;">
+    <tr style="background: #1a1a3a;">
+      <th style="padding: 12px; text-align: left; color: #00d9ff;">Item</th>
+      <th style="padding: 12px; text-align: left; color: #00d9ff;">Purpose</th>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 12px;">Add-a-Fuse (Mini blade)</td>
+      <td style="padding: 12px;">Clean tap into fuse circuit</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 12px;">5A Mini blade fuse</td>
+      <td style="padding: 12px;">Protect Shelly circuit</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 12px;">18 AWG wire (red/black)</td>
+      <td style="padding: 12px;">Power connections</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 12px;">Ring terminals or spade connectors</td>
+      <td style="padding: 12px;">Connect to terminal bars</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 12px;">Velcro strips</td>
+      <td style="padding: 12px;">Mount the Shelly</td>
+    </tr>
+  </table>
+
+</body>
+</html>

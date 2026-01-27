@@ -1,0 +1,295 @@
+/**
+ * Worker Bee - ESP32-S3 Touchscreen Monitor + BLE Gamepad
+ *
+ * Dual-core architecture:
+ *   Core 0: WiFi + MQTT (network protocol tasks)
+ *   Core 1: BLE + LVGL UI + Input (application tasks)
+ *
+ * Features:
+ *   - MQTT console showing all hive messages
+ *   - Device grid showing discovered bees
+ *   - BLE HID gamepad with 3 analog axes (pots)
+ *   - Dashboard with gauges and charts
+ */
+
+#include <Arduino.h>
+#include <esp_timer.h>
+#include <esp_system.h>
+#include <esp_mac.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/queue.h>
+
+#include "config.h"
+
+// Module includes
+#include "ui/ui_init.h"
+// #include "wifi/wifi_manager.h"
+// #include "mqtt/mqtt_client.h"
+// #include "mqtt/bee_registry.h"
+// #include "ble/ble_gamepad.h"
+// #include "input/potentiometer.h"
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Global State
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Device ID (generated from MAC address)
+char deviceId[32] = {0};
+
+// Task handles
+TaskHandle_t taskNetworkHandle = NULL;
+TaskHandle_t taskAppHandle = NULL;
+TaskHandle_t taskInputHandle = NULL;
+
+// Inter-core message queues
+QueueHandle_t mqttMessageQueue = NULL;  // MQTT messages -> UI
+QueueHandle_t gamepadAxisQueue = NULL;  // Pot values -> BLE
+
+// Shared state (protected by mutexes where needed)
+volatile bool wifiConnected = false;
+volatile bool mqttConnected = false;
+volatile bool bleConnected = false;
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Message Structures for Queue Communication
+// ═══════════════════════════════════════════════════════════════════════════
+
+struct MqttMessage {
+    char topic[128];
+    char payload[512];
+    uint32_t timestamp;
+};
+
+struct GamepadAxes {
+    uint8_t throttle;  // 0-255
+    uint8_t brake;     // 0-255
+    uint8_t volume;    // 0-255
+};
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Core 0 Task: Network (WiFi + MQTT)
+// ═══════════════════════════════════════════════════════════════════════════
+
+void taskNetwork(void* parameter) {
+    Serial.println("[Core0] Network task started");
+
+    // TODO: Initialize WiFiManager
+    // wifiManager.autoConnect(WIFI_AP_NAME);
+
+    // TODO: Connect to MQTT broker
+    // mqttClient.setServer(MQTT_BROKER_HOST, MQTT_BROKER_PORT);
+    // mqttClient.setCallback(mqttCallback);
+
+    // TODO: Subscribe to all bee topics
+    // mqttClient.subscribe(MQTT_SUB_ALL_DISCOVERY);
+    // mqttClient.subscribe(MQTT_SUB_ALL_HEALTH);
+    // mqttClient.subscribe(MQTT_SUB_ALL_STATE);
+    // mqttClient.subscribe(MQTT_SUB_ALL_LOGS);
+
+    uint32_t lastHealthReport = 0;
+
+    while (true) {
+        // TODO: Maintain MQTT connection
+        // mqttClient.loop();
+
+        // Report own health periodically
+        uint32_t now = millis();
+        if (now - lastHealthReport >= HEALTH_REPORT_INTERVAL_MS) {
+            lastHealthReport = now;
+            // TODO: Publish health
+            // publishHealth();
+        }
+
+        // Yield to other tasks
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Core 1 Task: Application (BLE + UI)
+// ═══════════════════════════════════════════════════════════════════════════
+
+void taskApp(void* parameter) {
+    Serial.println("[Core1] App task started");
+
+    // Initialize UI
+    uiManager.begin();
+
+    while (true) {
+        // Process MQTT messages from queue -> update UI
+        MqttMessage msg;
+        while (xQueueReceive(mqttMessageQueue, &msg, 0) == pdTRUE) {
+            Serial.printf("[UI] MQTT: %s\n", msg.topic);
+        }
+
+        // Update LVGL
+        uiManager.update();
+
+        vTaskDelay(pdMS_TO_TICKS(UI_REFRESH_RATE_MS));
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Core 1 Task: High-Priority Input Sampling
+// ═══════════════════════════════════════════════════════════════════════════
+
+void taskInput(void* parameter) {
+    Serial.println("[Core1] Input task started");
+
+    // Configure ADC pins
+    pinMode(POT_THROTTLE_PIN, INPUT);
+    pinMode(POT_BRAKE_PIN, INPUT);
+    pinMode(POT_VOLUME_PIN, INPUT);
+
+    // Smoothing buffers
+    int throttleReadings[ADC_SAMPLES] = {0};
+    int brakeReadings[ADC_SAMPLES] = {0};
+    int volumeReadings[ADC_SAMPLES] = {0};
+    int sampleIndex = 0;
+
+    // Calculate delay for desired sample rate
+    const TickType_t samplePeriod = pdMS_TO_TICKS(1000 / POT_SAMPLE_RATE);
+
+    while (true) {
+        // Read raw ADC values
+        throttleReadings[sampleIndex] = analogRead(POT_THROTTLE_PIN);
+        brakeReadings[sampleIndex] = analogRead(POT_BRAKE_PIN);
+        volumeReadings[sampleIndex] = analogRead(POT_VOLUME_PIN);
+
+        sampleIndex = (sampleIndex + 1) % ADC_SAMPLES;
+
+        // Calculate averages
+        long throttleSum = 0, brakeSum = 0, volumeSum = 0;
+        for (int i = 0; i < ADC_SAMPLES; i++) {
+            throttleSum += throttleReadings[i];
+            brakeSum += brakeReadings[i];
+            volumeSum += volumeReadings[i];
+        }
+
+        // Map 12-bit ADC (0-4095) to 8-bit axis (0-255)
+        GamepadAxes axes;
+        axes.throttle = map(throttleSum / ADC_SAMPLES, 0, 4095, 0, 255);
+        axes.brake = map(brakeSum / ADC_SAMPLES, 0, 4095, 0, 255);
+        axes.volume = map(volumeSum / ADC_SAMPLES, 0, 4095, 0, 255);
+
+        // Send to gamepad queue (overwrite if full - we only need latest)
+        xQueueOverwrite(gamepadAxisQueue, &axes);
+
+        vTaskDelay(samplePeriod);
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Device ID Generation
+// ═══════════════════════════════════════════════════════════════════════════
+
+void generateDeviceId() {
+    uint8_t mac[6];
+    esp_efuse_mac_get_default(mac);
+    snprintf(deviceId, sizeof(deviceId), "workerbee-%02x%02x%02x",
+             mac[3], mac[4], mac[5]);
+    Serial.printf("Device ID: %s\n", deviceId);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Setup
+// ═══════════════════════════════════════════════════════════════════════════
+
+void setup() {
+    // Initialize serial
+    Serial.begin(DEBUG_BAUD_RATE);
+    delay(1000);
+
+    Serial.println("\n════════════════════════════════════════");
+    Serial.println("  Worker Bee ESP32-S3 Starting...");
+    Serial.printf("  Firmware: %s\n", FIRMWARE_VERSION);
+    Serial.printf("  Free heap: %lu bytes\n", ESP.getFreeHeap());
+    Serial.printf("  PSRAM size: %lu bytes\n", ESP.getPsramSize());
+    Serial.println("════════════════════════════════════════\n");
+
+    // Generate device ID from MAC
+    generateDeviceId();
+
+    // Create message queues
+    mqttMessageQueue = xQueueCreate(UI_MAX_MESSAGES, sizeof(MqttMessage));
+    gamepadAxisQueue = xQueueCreate(1, sizeof(GamepadAxes));  // Only need latest
+
+    if (mqttMessageQueue == NULL || gamepadAxisQueue == NULL) {
+        Serial.println("ERROR: Failed to create queues!");
+        while (1) delay(1000);
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // Create tasks pinned to specific cores
+    // ─────────────────────────────────────────────────────────────────────────
+
+    // Core 0: Network task (WiFi + MQTT)
+    xTaskCreatePinnedToCore(
+        taskNetwork,           // Function
+        "Network",             // Name
+        TASK_STACK_MQTT,       // Stack size
+        NULL,                  // Parameters
+        TASK_PRIORITY_MQTT,    // Priority
+        &taskNetworkHandle,    // Handle
+        CORE_NETWORK           // Core 0
+    );
+
+    // Core 1: App task (BLE + UI)
+    xTaskCreatePinnedToCore(
+        taskApp,
+        "App",
+        TASK_STACK_UI,
+        NULL,
+        TASK_PRIORITY_UI,
+        &taskAppHandle,
+        CORE_APP
+    );
+
+    // Core 1: Input task (high priority pot sampling)
+    xTaskCreatePinnedToCore(
+        taskInput,
+        "Input",
+        TASK_STACK_INPUT,
+        NULL,
+        TASK_PRIORITY_INPUT,
+        &taskInputHandle,
+        CORE_APP
+    );
+
+    Serial.println("Tasks created. Worker Bee operational!\n");
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Loop (minimal - all work done in tasks)
+// ═══════════════════════════════════════════════════════════════════════════
+
+void loop() {
+    // Main loop is basically idle - FreeRTOS tasks do all the work
+    // Just do occasional housekeeping here
+
+    static uint32_t lastStatusLog = 0;
+    uint32_t now = millis();
+
+    if (now - lastStatusLog >= 10000) {  // Every 10 seconds
+        lastStatusLog = now;
+
+        Serial.println("─── Worker Bee Status ───");
+        Serial.printf("  Heap: %lu / %lu bytes\n",
+                     ESP.getFreeHeap(), ESP.getHeapSize());
+        Serial.printf("  WiFi: %s | MQTT: %s | BLE: %s\n",
+                     wifiConnected ? "✓" : "✗",
+                     mqttConnected ? "✓" : "✗",
+                     bleConnected ? "✓" : "✗");
+
+        // Read latest pot values for debug
+        GamepadAxes axes;
+        if (xQueuePeek(gamepadAxisQueue, &axes, 0) == pdTRUE) {
+            Serial.printf("  Axes: T=%3d B=%3d V=%3d\n",
+                         axes.throttle, axes.brake, axes.volume);
+        }
+        Serial.println("─────────────────────────\n");
+    }
+
+    delay(100);  // Don't hog CPU
+}

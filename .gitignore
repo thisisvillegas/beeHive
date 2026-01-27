@@ -1,0 +1,22 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+
+# IDE
+.vscode/
+.idea/
+
+# Secrets - DO NOT COMMIT
+src/secrets.h
+include/secrets.h
+
+# Dependencies
+node_modules/
+
+# OS files
+.DS_Store
+
+# Local tooling config
+.serena/
+CLAUDE.md
