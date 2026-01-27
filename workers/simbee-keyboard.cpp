@@ -1,5 +1,5 @@
 /**
- * SimBee Keyboard - Sim Racing Dashboard v1.9.0
+ * SimBee Keyboard - Sim Racing Dashboard v2.0.0
  *
  * T-Display S3 as a wireless BLE keyboard with sim racing features.
  * WiFi + BLE + MQTT + MCP23017 I/O Expander + SimHub + PWM Fan.
@@ -105,10 +105,7 @@ String topicAvail;
 // Track connection states
 bool wifiConnected = false;
 bool mqttConnected = false;
-bool lastButtonLeft = HIGH;
-bool lastButtonRight = HIGH;
 bool wasConnected = false;
-int debugPage = 0;  // 0 = main, 1 = connection status
 String lastKey = "-";
 unsigned long lastKeyTime = 0;
 
@@ -136,14 +133,28 @@ bool fanTestMode = false;     // True during startup test
 // Lap times (milliseconds, 0 = no data)
 int sessionBestLapMs = 0;
 int allTimeBestLapMs = 0;
+int lastLapMs = 0;
 
 // Lap count
 int currentLap = 0;
 int totalLaps = 0;
 
+// Position
+int position = 0;
+int opponents = 0;
+
+// Tyre data
+int tyreWearFL = 0, tyreWearFR = 0, tyreWearRL = 0, tyreWearRR = 0;
+int tyreTempFL = 0, tyreTempFR = 0, tyreTempRL = 0, tyreTempRR = 0;
+
 // Last triggered pin (for display)
 char lastTriggerPort = ' ';  // 'A' or 'B'
 int lastTriggerPin = -1;
+
+// MAX7219 view cycling (left button)
+int currentView = 0;
+#define NUM_VIEWS 4
+const char* viewNames[] = {"Speed", "Tire Wear", "Tire Temp", "Lap Times"};
 
 // ============== Forward Declarations ==============
 
@@ -151,9 +162,7 @@ bool isActuallyConnected();
 void connectMQTT();
 void publishState();
 void setFanSpeed(int percent);
-void max7219ShowSpeed(int kmh);
-void max7219ShowLaps();
-void max7219ShowInfo();
+void updateMaxDisplays();
 void onMqttConnect(bool sessionPresent);
 void onMqttDisconnect(espMqttClientTypes::DisconnectReason reason);
 void onMqttMessage(const espMqttClientTypes::MessageProperties& props,
@@ -258,7 +267,7 @@ void handlePortAPin(int pin, bool pressed) {
     // Update last triggered pin for display
     lastTriggerPort = 'A';
     lastTriggerPin = pin;
-    max7219ShowInfo();
+    updateMaxDisplays();
 
     // pressed = true when pin goes LOW (switch activated)
 
@@ -344,7 +353,7 @@ void handlePortBPin(int pin, bool pressed) {
     // Update last triggered pin for display
     lastTriggerPort = 'B';
     lastTriggerPin = pin;
-    max7219ShowInfo();
+    updateMaxDisplays();
 
     // pressed = true when pin goes LOW (switch activated)
 
@@ -464,86 +473,78 @@ void setFanSpeed(int percent) {
     ledcWrite(FAN_PWM_PIN, duty);  // ESP32-S3 uses pin directly
 }
 
-void parseSimHubData(const char* data) {
-    // Expected format: "speed=123,rpm=5000,gear=3"
-    // or just "speed=123"
+// Helper: extract int value for a key from comma-separated UDP string
+int udpParseInt(const String& str, const char* key) {
+    int idx = str.indexOf(key);
+    if (idx < 0) return -1;  // not found
+    int valueStart = idx + strlen(key);
+    int valueEnd = str.indexOf(',', valueStart);
+    if (valueEnd < 0) valueEnd = str.length();
+    return str.substring(valueStart, valueEnd).toInt();
+}
 
+void parseSimHubData(const char* data) {
     String str(data);
 
-    // Find speed value
-    int speedIdx = str.indexOf("speed=");
-    if (speedIdx >= 0) {
-        int valueStart = speedIdx + 6;  // length of "speed="
-        int valueEnd = str.indexOf(',', valueStart);
-        if (valueEnd < 0) valueEnd = str.length();
-
-        String speedStr = str.substring(valueStart, valueEnd);
-        carSpeedKmh = speedStr.toInt();
-
-        // Map car speed to fan speed
+    // Speed
+    int val = udpParseInt(str, "speed=");
+    if (val >= 0) {
+        carSpeedKmh = val;
         int fanPercent = map(carSpeedKmh, 0, FAN_MAX_SPEED_KMH, 0, 100);
         fanPercent = constrain(fanPercent, 0, 100);
-
         if (!fanTestMode && windEnabled) {
             setFanSpeed(fanPercent);
         } else if (!windEnabled) {
-            setFanSpeed(0);  // Keep fan off when wind disabled
+            setFanSpeed(0);
         }
-
-        Serial.printf("[Fan] Car: %d km/h -> Fan: %d%% (wind %s)\n",
-                      carSpeedKmh, fanPercent, windEnabled ? "ON" : "OFF");
-
-        // Update 7-segment display with speed
-        max7219ShowSpeed(carSpeedKmh);
     }
 
-    // Parse session best lap (milliseconds)
-    int bestIdx = str.indexOf("bestlap=");
-    if (bestIdx >= 0) {
-        int valueStart = bestIdx + 8;
-        int valueEnd = str.indexOf(',', valueStart);
-        if (valueEnd < 0) valueEnd = str.length();
-        sessionBestLapMs = str.substring(valueStart, valueEnd).toInt();
-    }
+    // Lap times (milliseconds)
+    val = udpParseInt(str, "bestlap=");
+    if (val >= 0) sessionBestLapMs = val;
+    val = udpParseInt(str, "allbest=");
+    if (val >= 0) allTimeBestLapMs = val;
+    val = udpParseInt(str, "lastlap=");
+    if (val >= 0) lastLapMs = val;
 
-    // Parse all-time best lap (milliseconds)
-    int allIdx = str.indexOf("allbest=");
-    if (allIdx >= 0) {
-        int valueStart = allIdx + 8;
-        int valueEnd = str.indexOf(',', valueStart);
-        if (valueEnd < 0) valueEnd = str.length();
-        allTimeBestLapMs = str.substring(valueStart, valueEnd).toInt();
-    }
-
-    // Update lap time display if either changed
-    if (bestIdx >= 0 || allIdx >= 0) {
-        max7219ShowLaps();
-    }
-
-    // Parse current lap number (check for ",lap=" or starts with "lap=")
+    // Lap count (careful: ",lap=" to avoid matching "bestlap=" or "lastlap=")
     int lapIdx = str.indexOf(",lap=");
-    if (lapIdx >= 0) lapIdx += 1;  // skip the comma
-    else if (str.startsWith("lap=")) lapIdx = 0;
     if (lapIdx >= 0) {
-        int valueStart = lapIdx + 4;
-        int valueEnd = str.indexOf(',', valueStart);
-        if (valueEnd < 0) valueEnd = str.length();
-        currentLap = str.substring(valueStart, valueEnd).toInt();
+        currentLap = str.substring(lapIdx + 5, str.indexOf(',', lapIdx + 5)).toInt();
+    } else if (str.startsWith("lap=")) {
+        currentLap = str.substring(4, str.indexOf(',')).toInt();
     }
+    val = udpParseInt(str, "totallaps=");
+    if (val >= 0) totalLaps = val;
 
-    // Parse total laps
-    int totalIdx = str.indexOf("totallaps=");
-    if (totalIdx >= 0) {
-        int valueStart = totalIdx + 10;
-        int valueEnd = str.indexOf(',', valueStart);
-        if (valueEnd < 0) valueEnd = str.length();
-        totalLaps = str.substring(valueStart, valueEnd).toInt();
-    }
+    // Position
+    val = udpParseInt(str, "pos=");
+    if (val >= 0) position = val;
+    val = udpParseInt(str, "opponents=");
+    if (val >= 0) opponents = val;
 
-    // Update device 2 display
-    if (lapIdx >= 0 || totalIdx >= 0) {
-        max7219ShowInfo();
-    }
+    // Tyre wear (percentage remaining)
+    val = udpParseInt(str, "twfl=");
+    if (val >= 0) tyreWearFL = val;
+    val = udpParseInt(str, "twfr=");
+    if (val >= 0) tyreWearFR = val;
+    val = udpParseInt(str, "twrl=");
+    if (val >= 0) tyreWearRL = val;
+    val = udpParseInt(str, "twrr=");
+    if (val >= 0) tyreWearRR = val;
+
+    // Tyre temperature (Celsius)
+    val = udpParseInt(str, "ttfl=");
+    if (val >= 0) tyreTempFL = val;
+    val = udpParseInt(str, "ttfr=");
+    if (val >= 0) tyreTempFR = val;
+    val = udpParseInt(str, "ttrl=");
+    if (val >= 0) tyreTempRL = val;
+    val = udpParseInt(str, "ttrr=");
+    if (val >= 0) tyreTempRR = val;
+
+    // Update MAX7219 displays
+    updateMaxDisplays();
 }
 
 void fanStartupTest() {
@@ -619,7 +620,7 @@ void max7219Init() {
     for (int i = 1; i <= 8; i++) max7219SendAll(i, 0x0F);
 }
 
-// Show a number right-aligned within a digit range on a specific device
+// Show a number right-aligned within a digit range (BCD mode)
 void max7219ShowDigits(int device, int value, int startDigit, int numDigits) {
     for (int i = 0; i < numDigits; i++) {
         int pos = startDigit + i;
@@ -632,42 +633,7 @@ void max7219ShowDigits(int device, int value, int startDigit, int numDigits) {
     }
 }
 
-// Device 0: MPH (left 4) | KMH (right 4)
-void max7219ShowSpeed(int kmh) {
-    int mph = (int)(kmh * 0.621371);
-    max7219ShowDigits(0, kmh, 1, 4);
-    max7219ShowDigits(0, mph, 5, 4);
-}
-
-// Show a lap time in M.SS.t format on 4 digits of a device
-// startDigit = rightmost digit, timeMs = lap time in milliseconds
-void max7219ShowLapTime(int device, int startDigit, int timeMs) {
-    if (timeMs <= 0) {
-        // No data: show -.--.-
-        max7219Send(device, startDigit + 3, 0x0A | 0x80);  // - with dp
-        max7219Send(device, startDigit + 2, 0x0A);          // -
-        max7219Send(device, startDigit + 1, 0x0A | 0x80);  // - with dp
-        max7219Send(device, startDigit,     0x0A);          // -
-        return;
-    }
-    int totalSeconds = timeMs / 1000;
-    int minutes = totalSeconds / 60;
-    int seconds = totalSeconds % 60;
-    int tenths = (timeMs % 1000) / 100;
-
-    max7219Send(device, startDigit + 3, (minutes % 10) | 0x80);  // M. (dp = colon)
-    max7219Send(device, startDigit + 2, seconds / 10);             // S
-    max7219Send(device, startDigit + 1, (seconds % 10) | 0x80);  // S. (dp = decimal)
-    max7219Send(device, startDigit,     tenths);                   // t
-}
-
-// Device 1: All-time best (left 4) | Session best (right 4)
-void max7219ShowLaps() {
-    max7219ShowLapTime(1, 1, sessionBestLapMs);   // Right 4: session best
-    max7219ShowLapTime(1, 5, allTimeBestLapMs);   // Left 4: all-time best
-}
-
-// Raw segment patterns for device 2 (no BCD decode)
+// Raw segment patterns (for non-BCD mode)
 // Bit layout: DP-A-B-C-D-E-F-G (bit 7 to bit 0)
 const uint8_t SEG_DIGIT[] = {
     0x7E, 0x30, 0x6D, 0x79, 0x33,  // 0-4
@@ -675,30 +641,88 @@ const uint8_t SEG_DIGIT[] = {
 };
 const uint8_t SEG_A     = 0x77;  // Letter A
 const uint8_t SEG_b     = 0x1F;  // Letter b
+const uint8_t SEG_t     = 0x0F;  // Letter t (d,e,f,g)
+const uint8_t SEG_I     = 0x30;  // Letter I (b,c)
+const uint8_t SEG_r     = 0x05;  // Letter r (e,g)
+const uint8_t SEG_E     = 0x4F;  // Letter E (a,d,e,f,g)
+const uint8_t SEG_n     = 0x15;  // Letter n (c,e,g)
+const uint8_t SEG_P     = 0x67;  // Letter P (a,b,e,f,g)
 const uint8_t SEG_DASH  = 0x01;  // Middle segment only
 const uint8_t SEG_BLANK = 0x00;
 
-// Device 2: Lap count (left 4) | Last pin triggered (right 4)
-void max7219ShowInfo() {
-    // Use raw segment mode for device 2
-    max7219Send(2, 0x09, 0x00);
+// Show full 8-digit lap time: _M.SS.mmm (BCD mode, digits 8-1)
+void max7219ShowFullLapTime(int device, int timeMs) {
+    max7219Send(device, 0x09, 0xFF);  // BCD decode all digits
+    if (timeMs <= 0) {
+        max7219Send(device, 8, 0x0F);         // blank
+        max7219Send(device, 7, 0x0F);         // blank
+        max7219Send(device, 6, 0x0A | 0x80);  // dash with DP
+        max7219Send(device, 5, 0x0A);         // dash
+        max7219Send(device, 4, 0x0A | 0x80);  // dash with DP
+        max7219Send(device, 3, 0x0A);         // dash
+        max7219Send(device, 2, 0x0A);         // dash
+        max7219Send(device, 1, 0x0A);         // dash
+        return;
+    }
+    int minutes = timeMs / 60000;
+    int seconds = (timeMs % 60000) / 1000;
+    int ms = timeMs % 1000;
 
-    // Left 4 (digits 8-5): current lap / total laps
+    max7219Send(device, 8, 0x0F);  // blank (or tens of minutes if >= 10)
+    max7219Send(device, 7, (minutes >= 10) ? (minutes / 10) : 0x0F);
+    max7219Send(device, 6, (minutes % 10) | 0x80);  // M with DP = colon
+    max7219Send(device, 5, seconds / 10);
+    max7219Send(device, 4, (seconds % 10) | 0x80);  // S with DP = decimal
+    max7219Send(device, 3, ms / 100);
+    max7219Send(device, 2, (ms / 10) % 10);
+    max7219Send(device, 1, ms % 10);
+}
+
+// ---- View 0: Speed + Position + Pin ----
+void showView0() {
+    // Device 0: MPH (left 4) | KMH (right 4) — BCD
+    max7219Send(0, 0x09, 0xFF);
+    int mph = (int)(carSpeedKmh * 0.621371);
+    max7219ShowDigits(0, carSpeedKmh, 1, 4);
+    max7219ShowDigits(0, mph, 5, 4);
+
+    // Device 1: Lap N/Total (left 4) | Position/Total (right 4) — BCD
+    max7219Send(1, 0x09, 0xFF);
     if (currentLap > 0) {
-        // Format: CC.TT (current with dp separator, then total)
-        uint8_t dp = 0x80;  // decimal point flag
-        max7219Send(2, 8, (currentLap >= 10) ? SEG_DIGIT[currentLap / 10] : SEG_BLANK);
-        max7219Send(2, 7, SEG_DIGIT[currentLap % 10] | dp);  // dp as separator
-        max7219Send(2, 6, (totalLaps >= 10) ? SEG_DIGIT[totalLaps / 10] : SEG_BLANK);
-        max7219Send(2, 5, SEG_DIGIT[totalLaps % 10]);
+        max7219Send(1, 8, (currentLap >= 10) ? (currentLap / 10) : 0x0F);
+        max7219Send(1, 7, (currentLap % 10) | 0x80);  // DP separator
+        max7219Send(1, 6, (totalLaps >= 10) ? (totalLaps / 10) : 0x0F);
+        max7219Send(1, 5, totalLaps % 10);
     } else {
-        max7219Send(2, 8, SEG_DASH);
-        max7219Send(2, 7, SEG_DASH | 0x80);
-        max7219Send(2, 6, SEG_DASH);
-        max7219Send(2, 5, SEG_DASH);
+        for (int i = 5; i <= 8; i++) max7219Send(1, i, 0x0A);  // dashes
+    }
+    if (position > 0) {
+        int total = opponents + 1;
+        max7219Send(1, 4, (position >= 10) ? (position / 10) : 0x0F);
+        max7219Send(1, 3, (position % 10) | 0x80);  // DP separator
+        max7219Send(1, 2, (total >= 10) ? (total / 10) : 0x0F);
+        max7219Send(1, 1, total % 10);
+    } else {
+        for (int i = 1; i <= 4; i++) max7219Send(1, i, 0x0A);  // dashes
     }
 
-    // Right 4 (digits 4-1): last triggered pin (e.g. "A  3" or "b  7")
+    // Device 2: Session best (left 4) | Last pin (right 4) — Raw segments
+    max7219Send(2, 0x09, 0x00);
+    if (sessionBestLapMs > 0) {
+        int totalSec = sessionBestLapMs / 1000;
+        int mins = totalSec / 60;
+        int secs = totalSec % 60;
+        int tenths = (sessionBestLapMs % 1000) / 100;
+        max7219Send(2, 8, SEG_DIGIT[mins % 10] | 0x80);
+        max7219Send(2, 7, SEG_DIGIT[secs / 10]);
+        max7219Send(2, 6, SEG_DIGIT[secs % 10] | 0x80);
+        max7219Send(2, 5, SEG_DIGIT[tenths]);
+    } else {
+        max7219Send(2, 8, SEG_DASH | 0x80);
+        max7219Send(2, 7, SEG_DASH);
+        max7219Send(2, 6, SEG_DASH | 0x80);
+        max7219Send(2, 5, SEG_DASH);
+    }
     if (lastTriggerPin >= 0) {
         max7219Send(2, 4, (lastTriggerPort == 'A') ? SEG_A : SEG_b);
         max7219Send(2, 3, SEG_BLANK);
@@ -709,145 +733,157 @@ void max7219ShowInfo() {
     }
 }
 
+// ---- View 1: Tire Wear ----
+void showView1() {
+    // Device 0: Label "tirE" — Raw segments
+    max7219Send(0, 0x09, 0x00);
+    max7219Send(0, 8, SEG_t);
+    max7219Send(0, 7, SEG_I);
+    max7219Send(0, 6, SEG_r);
+    max7219Send(0, 5, SEG_E);
+    max7219Send(0, 4, SEG_BLANK);
+    max7219Send(0, 3, SEG_BLANK);
+    max7219Send(0, 2, SEG_BLANK);
+    max7219Send(0, 1, SEG_BLANK);
+
+    // Device 1: FL (left 4) | FR (right 4) — BCD
+    max7219Send(1, 0x09, 0xFF);
+    max7219ShowDigits(1, tyreWearFL, 5, 4);
+    max7219ShowDigits(1, tyreWearFR, 1, 4);
+
+    // Device 2: RL (left 4) | RR (right 4) — BCD
+    max7219Send(2, 0x09, 0xFF);
+    max7219ShowDigits(2, tyreWearRL, 5, 4);
+    max7219ShowDigits(2, tyreWearRR, 1, 4);
+}
+
+// ---- View 2: Tire Temperature ----
+void showView2() {
+    // Device 0: Label "tEnP" — Raw segments
+    max7219Send(0, 0x09, 0x00);
+    max7219Send(0, 8, SEG_t);
+    max7219Send(0, 7, SEG_E);
+    max7219Send(0, 6, SEG_n);
+    max7219Send(0, 5, SEG_P);
+    max7219Send(0, 4, SEG_BLANK);
+    max7219Send(0, 3, SEG_BLANK);
+    max7219Send(0, 2, SEG_BLANK);
+    max7219Send(0, 1, SEG_BLANK);
+
+    // Device 1: FL (left 4) | FR (right 4) — BCD
+    max7219Send(1, 0x09, 0xFF);
+    max7219ShowDigits(1, tyreTempFL, 5, 4);
+    max7219ShowDigits(1, tyreTempFR, 1, 4);
+
+    // Device 2: RL (left 4) | RR (right 4) — BCD
+    max7219Send(2, 0x09, 0xFF);
+    max7219ShowDigits(2, tyreTempRL, 5, 4);
+    max7219ShowDigits(2, tyreTempRR, 1, 4);
+}
+
+// ---- View 3: Lap Times (full precision) ----
+void showView3() {
+    // Each device shows one time in _M.SS.mmm format
+    max7219ShowFullLapTime(0, allTimeBestLapMs);   // Row 1: All-time best
+    max7219ShowFullLapTime(1, sessionBestLapMs);   // Row 2: Session best
+    max7219ShowFullLapTime(2, lastLapMs);           // Row 3: Last lap
+}
+
+// Master display update — call after data changes or view switch
+void updateMaxDisplays() {
+    switch (currentView) {
+        case 0: showView0(); break;
+        case 1: showView1(); break;
+        case 2: showView2(); break;
+        case 3: showView3(); break;
+    }
+}
+
 // ============== Display ==============
 
 void drawScreen() {
     spr.fillSprite(COLOR_BG);
 
-    if (debugPage == 0) {
-        // ========== PAGE 1: Main Debug ==========
+    // Title (top half - invisible on broken screen, but keeps layout)
+    spr.setTextColor(COLOR_TEXT);
+    spr.setTextDatum(TC_DATUM);
+    spr.drawString("SimBee Keyboard", SCREEN_WIDTH/2, 20, 4);
 
-        // Title (top half - invisible on broken screen, but keeps layout)
-        spr.setTextColor(COLOR_TEXT);
-        spr.setTextDatum(TC_DATUM);
-        spr.drawString("SimBee Keyboard", SCREEN_WIDTH/2, 20, 4);
+    // Current view name
+    int viewY = 170;
+    spr.setTextDatum(TL_DATUM);
+    spr.setTextColor(COLOR_ACCENT);
+    spr.drawString(String("View: ") + viewNames[currentView], 10, viewY, 2);
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString(String(currentView + 1) + "/" + String(NUM_VIEWS), 145, viewY, 2);
 
-        // Last key sent
-        int keyY = 170;
-        spr.setTextDatum(TL_DATUM);
+    // Last key sent
+    int keyY = 192;
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("Key:", 10, keyY, 2);
+    spr.setTextColor(COLOR_TEXT);
+    spr.drawString(lastKey, 50, keyY, 2);
+    if (lastKeyTime > 0) {
+        unsigned long ago = (millis() - lastKeyTime) / 1000;
         spr.setTextColor(COLOR_DIM);
-        spr.drawString("Last key:", 20, keyY, 2);
-        spr.setTextColor(COLOR_TEXT);
-        spr.drawString(lastKey, 100, keyY, 2);
-
-        // Time since last key
-        if (lastKeyTime > 0) {
-            unsigned long ago = (millis() - lastKeyTime) / 1000;
-            String agoStr;
-            if (ago < 60) {
-                agoStr = String(ago) + "s ago";
-            } else {
-                agoStr = String(ago / 60) + "m ago";
-            }
-            spr.setTextColor(COLOR_DIM);
-            spr.drawString(agoStr, 20, keyY + 20, 1);
-        }
-
-        // Fan/Wind display
-        int fanY = 210;
-        spr.setTextDatum(TL_DATUM);
-        spr.setTextColor(COLOR_DIM);
-        spr.drawString("Wind:", 20, fanY, 2);
-
-        // Wind status indicator
-        spr.setTextColor(windEnabled ? COLOR_ACCENT : COLOR_WARN);
-        spr.drawString(windEnabled ? "ON" : "OFF", 70, fanY, 2);
-
-        // Fan speed bar background
-        spr.fillRect(100, fanY, 50, 14, COLOR_DIM);
-        int barWidth = map(fanSpeedPercent, 0, 100, 0, 50);
-        if (barWidth > 0) {
-            spr.fillRect(100, fanY, barWidth, 14, windEnabled ? COLOR_ACCENT : COLOR_WARN);
-        }
-        spr.setTextColor(COLOR_TEXT);
-        spr.drawString(String(fanSpeedPercent) + "%", 155, fanY, 1);
-
-        // Port A indicators (PA0-PA7)
-        int portAY = 245;
-        spr.setTextDatum(TL_DATUM);
-        spr.setTextColor(COLOR_DIM);
-        spr.drawString("A:", 5, portAY, 1);
-        for (int i = 0; i < 8; i++) {
-            uint8_t bit = (currentPortA >> i) & 0x01;
-            uint16_t col = (bit == 0) ? COLOR_ACCENT : COLOR_DIM;
-            spr.fillCircle(25 + i * 18, portAY + 5, 5, col);
-        }
-
-        // Port B indicators (PB0-PB7)
-        int portBY = 265;
-        spr.setTextColor(COLOR_DIM);
-        spr.drawString("B:", 5, portBY, 1);
-        for (int i = 0; i < 8; i++) {
-            uint8_t bit = (currentPortB >> i) & 0x01;
-            uint16_t col = (bit == 0) ? COLOR_ACCENT : COLOR_DIM;
-            spr.fillCircle(25 + i * 18, portBY + 5, 5, col);
-        }
-
-        // Page indicator
-        spr.setTextDatum(TC_DATUM);
-        spr.setTextColor(COLOR_DIM);
-        spr.drawString("[1/2]  BTN1 = next", SCREEN_WIDTH/2, SCREEN_HEIGHT - 25, 1);
-
-    } else {
-        // ========== PAGE 2: Connection Status ==========
-
-        // Title in bottom half
-        spr.setTextColor(COLOR_TEXT);
-        spr.setTextDatum(TC_DATUM);
-        spr.drawString("Connections", SCREEN_WIDTH/2, 170, 4);
-
-        spr.setTextDatum(TL_DATUM);
-
-        // WiFi
-        int wifiY = 205;
-        spr.setTextColor(COLOR_DIM);
-        spr.drawString("WiFi:", 20, wifiY, 2);
-        wifiConnected = WiFi.status() == WL_CONNECTED;
-        if (wifiConnected) {
-            spr.setTextColor(COLOR_ACCENT);
-            spr.drawString(WiFi.localIP().toString(), 70, wifiY, 2);
-        } else {
-            spr.setTextColor(COLOR_WARN);
-            spr.drawString("Disconnected", 70, wifiY, 2);
-        }
-        spr.fillCircle(SCREEN_WIDTH - 20, wifiY + 6, 6, wifiConnected ? COLOR_ACCENT : COLOR_WARN);
-
-        // MQTT
-        int mqttY = 228;
-        spr.setTextColor(COLOR_DIM);
-        spr.drawString("MQTT:", 20, mqttY, 2);
-        mqttConnected = mqtt.connected();
-        spr.setTextColor(mqttConnected ? COLOR_ACCENT : COLOR_WARN);
-        spr.drawString(mqttConnected ? "Connected" : "Waiting...", 70, mqttY, 2);
-        spr.fillCircle(SCREEN_WIDTH - 20, mqttY + 6, 6, mqttConnected ? COLOR_ACCENT : COLOR_WARN);
-
-        // BLE
-        bool connected = isActuallyConnected();
-        int bleY = 251;
-        spr.setTextColor(COLOR_DIM);
-        spr.drawString("BLE:", 20, bleY, 2);
-        spr.setTextColor(connected ? COLOR_ACCENT : COLOR_WARN);
-        spr.drawString(connected ? "Connected" : "Waiting...", 70, bleY, 2);
-        spr.fillCircle(SCREEN_WIDTH - 20, bleY + 6, 6, connected ? COLOR_ACCENT : COLOR_WARN);
-
-        // MCP23017
-        int mcpY = 274;
-        spr.setTextColor(COLOR_DIM);
-        spr.drawString("MCP:", 20, mcpY, 2);
-        spr.setTextColor(mcpFound ? COLOR_ACCENT : COLOR_WARN);
-        spr.drawString(mcpFound ? "OK" : "Not found", 70, mcpY, 2);
-        spr.fillCircle(SCREEN_WIDTH - 20, mcpY + 6, 6, mcpFound ? COLOR_ACCENT : COLOR_WARN);
-
-        // Page indicator
-        spr.setTextDatum(TC_DATUM);
-        spr.setTextColor(COLOR_DIM);
-        spr.drawString("[2/2]  BTN1 = next", SCREEN_WIDTH/2, SCREEN_HEIGHT - 25, 1);
+        spr.drawString(ago < 60 ? String(ago) + "s" : String(ago / 60) + "m",
+                       130, keyY, 1);
     }
 
-    // Footer (both pages)
+    // Fan/Wind bar
+    int fanY = 214;
+    spr.setTextDatum(TL_DATUM);
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("Wind:", 10, fanY, 2);
+    spr.setTextColor(windEnabled ? COLOR_ACCENT : COLOR_WARN);
+    spr.drawString(windEnabled ? "ON" : "OFF", 60, fanY, 2);
+    spr.fillRect(95, fanY, 50, 14, COLOR_DIM);
+    int barWidth = map(fanSpeedPercent, 0, 100, 0, 50);
+    if (barWidth > 0) {
+        spr.fillRect(95, fanY, barWidth, 14, windEnabled ? COLOR_ACCENT : COLOR_WARN);
+    }
+    spr.setTextColor(COLOR_TEXT);
+    spr.drawString(String(fanSpeedPercent) + "%", 150, fanY, 1);
+
+    // Connection status dots (compact row)
+    int connY = 238;
+    spr.setTextDatum(TL_DATUM);
+    wifiConnected = WiFi.status() == WL_CONNECTED;
+    mqttConnected = mqtt.connected();
+    bool bleOk = isActuallyConnected();
+    // WiFi dot
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("W", 10, connY, 1);
+    spr.fillCircle(22, connY + 4, 4, wifiConnected ? COLOR_ACCENT : COLOR_WARN);
+    // MQTT dot
+    spr.drawString("M", 40, connY, 1);
+    spr.fillCircle(53, connY + 4, 4, mqttConnected ? COLOR_ACCENT : COLOR_WARN);
+    // BLE dot
+    spr.drawString("B", 70, connY, 1);
+    spr.fillCircle(82, connY + 4, 4, bleOk ? COLOR_ACCENT : COLOR_WARN);
+    // MCP dot
+    spr.drawString("I2C", 100, connY, 1);
+    spr.fillCircle(125, connY + 4, 4, mcpFound ? COLOR_ACCENT : COLOR_WARN);
+
+    // Port indicators (compact)
+    int portY = 258;
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("A:", 5, portY, 1);
+    for (int i = 0; i < 8; i++) {
+        uint8_t bit = (currentPortA >> i) & 0x01;
+        spr.fillCircle(25 + i * 18, portY + 5, 5, (bit == 0) ? COLOR_ACCENT : COLOR_DIM);
+    }
+    int portBY = 278;
+    spr.drawString("B:", 5, portBY, 1);
+    for (int i = 0; i < 8; i++) {
+        uint8_t bit = (currentPortB >> i) & 0x01;
+        spr.fillCircle(25 + i * 18, portBY + 5, 5, (bit == 0) ? COLOR_ACCENT : COLOR_DIM);
+    }
+
+    // Footer
     spr.setTextDatum(TC_DATUM);
     spr.setTextColor(COLOR_DIM);
-    spr.drawString("v1.9.0", SCREEN_WIDTH/2, SCREEN_HEIGHT - 10, 1);
+    spr.drawString("v2.0.0  BTN1=view", SCREEN_WIDTH/2, SCREEN_HEIGHT - 10, 1);
 
     spr.pushSprite(0, 0);
 }
@@ -866,22 +902,27 @@ void sendKey(char key) {
 }
 
 void handleButtons() {
+    static unsigned long lastLeftPress = 0;
+    static unsigned long lastRightPress = 0;
+    const unsigned long debounceMs = 200;
+
     bool buttonLeft = digitalRead(BUTTON_LEFT);
     bool buttonRight = digitalRead(BUTTON_RIGHT);
-    
-    // Left button - toggle debug page
-    if (buttonLeft == LOW && lastButtonLeft == HIGH) {
-        debugPage = (debugPage + 1) % 2;
+
+    // Left button - cycle MAX7219 view
+    if (buttonLeft == LOW && millis() - lastLeftPress > debounceMs) {
+        lastLeftPress = millis();
+        currentView = (currentView + 1) % NUM_VIEWS;
+        updateMaxDisplays();
         drawScreen();
+        Serial.printf("[View] Switched to %d: %s\n", currentView, viewNames[currentView]);
     }
-    
+
     // Right button - send 'b'
-    if (buttonRight == LOW && lastButtonRight == HIGH) {
+    if (buttonRight == LOW && millis() - lastRightPress > debounceMs) {
+        lastRightPress = millis();
         sendKey('b');
     }
-    
-    lastButtonLeft = buttonLeft;
-    lastButtonRight = buttonRight;
 }
 
 // ============== Setup ==============
@@ -890,7 +931,7 @@ void setup() {
     Serial.begin(115200);
     delay(500);
 
-    Serial.println("\n=== SimBee Keyboard v1.9.0 ===");
+    Serial.println("\n=== SimBee Keyboard v2.0.0 ===");
 
     // I2C for MCP23017 (QWIIC port)
     Wire.begin(I2C_SDA, I2C_SCL);
@@ -957,9 +998,8 @@ void setup() {
     // Now we can safely use NimBLE functions
     delay(500);
     
-    // Clear any old BLE bonds/pairings
-    Serial.println("[BLE] Clearing old bonds...");
-    NimBLEDevice::deleteAllBonds();
+    // Keep existing BLE bonds (clearing causes Windows re-pair crash loop)
+    Serial.printf("[BLE] Bonds stored: %d\n", NimBLEDevice::getNumBonds());
     
     // Give BLE stack time to stabilize
     delay(1000);
@@ -1000,10 +1040,8 @@ void setup() {
 
     // Initialize MAX7219 7-segment displays (3 daisy-chained)
     max7219Init();
-    max7219ShowSpeed(0);   // Device 0: show 0 until telemetry
-    max7219ShowLaps();     // Device 1: show dashes until lap data
-    max7219ShowInfo();     // Device 2: show dashes until pin/lap data
-    Serial.println("[MAX7219] 3 displays initialized");
+    updateMaxDisplays();   // Show initial view (View 0: Speed)
+    Serial.printf("[MAX7219] 3 displays initialized, view: %s\n", viewNames[currentView]);
 
     // Initialize fan PWM (ESP32-S3 uses new LEDC API)
     ledcAttach(FAN_PWM_PIN, FAN_PWM_FREQ, FAN_PWM_RESOLUTION);

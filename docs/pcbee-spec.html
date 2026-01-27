@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>pcBee - Native Windows Companion App</title>
+<style>
+  :root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --border: #1e1e2e;
+    --text: #c8c8d4;
+    --dim: #6a6a7a;
+    --accent: #f0c040;
+    --green: #40d870;
+    --blue: #4090f0;
+    --orange: #f08040;
+    --red: #f04040;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.6;
+    padding: 40px;
+    max-width: 960px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 2.4em;
+    color: var(--accent);
+    margin-bottom: 8px;
+    letter-spacing: -0.5px;
+  }
+  h1 span { color: var(--dim); font-weight: 300; }
+  .subtitle {
+    color: var(--dim);
+    font-size: 1.1em;
+    margin-bottom: 40px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 20px;
+  }
+  h2 {
+    color: var(--accent);
+    font-size: 1.4em;
+    margin: 36px 0 16px 0;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  h3 {
+    color: var(--blue);
+    font-size: 1.1em;
+    margin: 20px 0 10px 0;
+  }
+  p { margin-bottom: 12px; }
+  code {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 0.9em;
+    color: var(--green);
+  }
+  pre {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 16px 20px;
+    overflow-x: auto;
+    margin: 12px 0 20px 0;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 0.85em;
+    line-height: 1.7;
+    color: var(--text);
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px 24px;
+    margin: 16px 0;
+  }
+  .card-title {
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 1.05em;
+    margin-bottom: 8px;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+    margin: 16px 0;
+  }
+  @media (max-width: 640px) { .grid { grid-template-columns: 1fr; } }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 12px 0 20px 0;
+  }
+  th, td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    color: var(--accent);
+    font-weight: 600;
+    font-size: 0.85em;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  td { font-size: 0.95em; }
+  tr:hover td { background: rgba(240, 192, 64, 0.03); }
+  .tag {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 0.8em;
+    font-weight: 600;
+  }
+  .tag-green { background: rgba(64, 216, 112, 0.15); color: var(--green); }
+  .tag-blue { background: rgba(64, 144, 240, 0.15); color: var(--blue); }
+  .tag-orange { background: rgba(240, 128, 64, 0.15); color: var(--orange); }
+  .tag-red { background: rgba(240, 64, 64, 0.15); color: var(--red); }
+  ul { padding-left: 24px; margin: 8px 0 16px 0; }
+  li { margin: 4px 0; }
+  .diagram {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    margin: 20px 0;
+    font-family: 'Cascadia Code', 'Fira Code', monospace;
+    font-size: 0.82em;
+    line-height: 1.8;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--dim);
+  }
+  .diagram b { color: var(--accent); font-weight: normal; }
+  .diagram i { color: var(--green); font-style: normal; }
+  .diagram em { color: var(--blue); font-style: normal; }
+  .phase {
+    display: flex;
+    align-items: flex-start;
+    gap: 16px;
+    margin: 12px 0;
+  }
+  .phase-num {
+    background: var(--accent);
+    color: var(--bg);
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 700;
+    font-size: 0.85em;
+    flex-shrink: 0;
+    margin-top: 2px;
+  }
+  .phase-content { flex: 1; }
+  .phase-label { font-weight: 600; color: var(--text); }
+  .phase-desc { color: var(--dim); font-size: 0.95em; }
+  hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 40px 0;
+  }
+  .footer {
+    color: var(--dim);
+    font-size: 0.85em;
+    margin-top: 40px;
+    padding-top: 20px;
+    border-top: 1px solid var(--border);
+  }
+</style>
+</head>
+<body>
+
+<h1>pcBee <span>/ Native Windows Companion</span></h1>
+<p class="subtitle">
+  A system tray application for the gaming PC that bridges SimBee hardware
+  to the full Windows API surface over UDP. Replaces the Python SimHub bridge
+  and adds audio mixer control, PC automation, and bidirectional communication.
+</p>
+
+<h2>Architecture</h2>
+
+<div class="diagram"><b>SimBee (ESP32-S3)</b>                         <b>Gaming PC (pcBee)</b>
+<i>T-Display + MAX7219 + MCP23017</i>              <i>Native Windows App (.exe)</i>
+&zwj;
+Pots &rarr; ADC reads ──── <em>UDP :5006</em> ────&rarr;  Volume mixer control
+Fan &larr; speed      &larr;─── <em>UDP :5005</em> ─────  SimHub API poller
+Displays &larr; data  &larr;─── <em>UDP :5005</em> ─────  (same telemetry stream)
+Keys/Cmds        ──── <em>UDP :5006</em> ────&rarr;  App launch, mic mute, etc.
+Alerts/Info      &larr;─── <em>UDP :5007</em> ─────  Discord, now playing, etc.
+</div>
+
+<h2>UDP Protocol</h2>
+
+<table>
+  <tr>
+    <th>Port</th>
+    <th>Direction</th>
+    <th>Purpose</th>
+    <th>Format</th>
+  </tr>
+  <tr>
+    <td><code>5005</code></td>
+    <td>PC &rarr; ESP32</td>
+    <td>SimHub telemetry stream</td>
+    <td><code>key=val,key=val,...</code></td>
+  </tr>
+  <tr>
+    <td><code>5006</code></td>
+    <td>ESP32 &rarr; PC</td>
+    <td>Pot values, commands</td>
+    <td><code>pot1=512,pot2=1023,cmd=mute</code></td>
+  </tr>
+  <tr>
+    <td><code>5007</code></td>
+    <td>PC &rarr; ESP32</td>
+    <td>PC state, notifications</td>
+    <td><code>discord=1,song=Track Name</code></td>
+  </tr>
+</table>
+
+<h2>Core Features</h2>
+
+<div class="grid">
+  <div class="card">
+    <div class="card-title">SimHub Bridge</div>
+    <p>Polls <code>localhost:8888/api/getgamedata</code> at 20Hz.
+    Extracts speed, lap times, tire data, position. Sends all fields to ESP32 over UDP :5005.</p>
+    <p><span class="tag tag-green">Replaces</span> Python <code>simhub_bridge.py</code></p>
+  </div>
+  <div class="card">
+    <div class="card-title">Audio Mixer Control</div>
+    <p>Receives pot values from ESP32. Maps pot 3 to game audio, pot 4 to comms (Discord/TeamSpeak).
+    Uses Windows Core Audio API (<code>IAudioSessionManager2</code>) for per-app volume.</p>
+    <p><span class="tag tag-blue">New</span> Requires <code>policyconfig.h</code> COM interop</p>
+  </div>
+  <div class="card">
+    <div class="card-title">System Tray App</div>
+    <p>Runs silently in system tray. Shows connection status icon (green = ESP32 connected,
+    red = no heartbeat). Right-click menu for settings, log viewer, quit.</p>
+    <p><span class="tag tag-green">Auto-start</span> via Windows Startup folder</p>
+  </div>
+  <div class="card">
+    <div class="card-title">PC Automation</div>
+    <p>Execute commands received from ESP32: toggle mic mute, switch audio output device,
+    launch apps, media play/pause, screenshot, custom hotkeys.</p>
+    <p><span class="tag tag-orange">Extensible</span> Command registry pattern</p>
+  </div>
+</div>
+
+<h2>Potentiometer Mapping</h2>
+
+<table>
+  <tr>
+    <th>Pot</th>
+    <th>ESP32 GPIO</th>
+    <th>Function</th>
+    <th>Details</th>
+  </tr>
+  <tr>
+    <td>Pot 1</td>
+    <td>TBD (ADC1)</td>
+    <td>MAX7219 view selector</td>
+    <td>4 positions mapped to views 0-3. Handled on ESP32 side (no PC needed).</td>
+  </tr>
+  <tr>
+    <td>Pot 2</td>
+    <td>TBD (ADC1)</td>
+    <td>T-Display view selector</td>
+    <td>Cycles TFT screen views. Handled on ESP32 side. Ready when new screens arrive.</td>
+  </tr>
+  <tr>
+    <td>Pot 3</td>
+    <td>TBD (ADC1)</td>
+    <td>Game volume</td>
+    <td>ADC value sent to pcBee via UDP :5006. pcBee maps to game audio session volume.</td>
+  </tr>
+  <tr>
+    <td>Pot 4</td>
+    <td>TBD (ADC1)</td>
+    <td>Comms volume</td>
+    <td>ADC value sent to pcBee via UDP :5006. pcBee maps to Discord/comms app volume.</td>
+  </tr>
+</table>
+
+<p><strong>GPIO note:</strong> GPIO 2 (fan PWM) and GPIO 10 (MAX7219 CS) are occupied.
+Candidate free ADC pins on ESP32-S3: GPIO 1, 3, 4, 9. Final assignment when wiring.</p>
+
+<h2>Windows APIs Used</h2>
+
+<table>
+  <tr><th>API</th><th>Purpose</th><th>C# Access</th></tr>
+  <tr>
+    <td>Core Audio API</td>
+    <td>Per-app volume control, audio device enumeration</td>
+    <td>COM interop via <code>NAudio</code> or direct <code>MMDeviceEnumerator</code></td>
+  </tr>
+  <tr>
+    <td>System.Net.Sockets</td>
+    <td>UDP send/receive</td>
+    <td><code>UdpClient</code> class</td>
+  </tr>
+  <tr>
+    <td>System.Net.Http</td>
+    <td>SimHub API polling</td>
+    <td><code>HttpClient.GetAsync</code></td>
+  </tr>
+  <tr>
+    <td>NotifyIcon</td>
+    <td>System tray icon and menu</td>
+    <td>WinForms <code>NotifyIcon</code> component</td>
+  </tr>
+  <tr>
+    <td>Registry / Startup</td>
+    <td>Auto-start on login</td>
+    <td><code>HKCU\Software\Microsoft\Windows\CurrentVersion\Run</code></td>
+  </tr>
+  <tr>
+    <td>Process</td>
+    <td>Launch apps, detect running apps</td>
+    <td><code>System.Diagnostics.Process</code></td>
+  </tr>
+</table>
+
+<h2>Tech Stack</h2>
+
+<div class="card">
+  <table>
+    <tr><th>Component</th><th>Choice</th><th>Rationale</th></tr>
+    <tr>
+      <td>Language</td>
+      <td>C# / .NET 8</td>
+      <td>Native Windows API access, COM interop, compiled .exe, no runtime install needed on modern Windows</td>
+    </tr>
+    <tr>
+      <td>UI Framework</td>
+      <td>WinForms (tray only)</td>
+      <td>Minimal UI footprint. Tray icon + settings window. No heavy framework needed.</td>
+    </tr>
+    <tr>
+      <td>Audio Library</td>
+      <td>NAudio</td>
+      <td>Mature .NET wrapper for Windows Core Audio. Per-session volume, device switching.</td>
+    </tr>
+    <tr>
+      <td>Build</td>
+      <td><code>dotnet publish -r win-x64 --self-contained</code></td>
+      <td>Single .exe, no .NET install required on target machine</td>
+    </tr>
+  </table>
+</div>
+
+<h2>Implementation Phases</h2>
+
+<div class="phase">
+  <div class="phase-num">1</div>
+  <div class="phase-content">
+    <div class="phase-label">SimHub Bridge Port</div>
+    <div class="phase-desc">
+      Replicate the Python bridge in C#. Poll SimHub API, parse JSON, send UDP to ESP32.
+      System tray icon with green/red status. Validate against existing Python bridge output.
+    </div>
+  </div>
+</div>
+
+<div class="phase">
+  <div class="phase-num">2</div>
+  <div class="phase-content">
+    <div class="phase-label">ESP32 Command Listener</div>
+    <div class="phase-desc">
+      Open UDP :5006 listener. Parse incoming pot values and commands from ESP32.
+      Log to console/file. Map pot ranges to 0-100 volume scale.
+    </div>
+  </div>
+</div>
+
+<div class="phase">
+  <div class="phase-num">3</div>
+  <div class="phase-content">
+    <div class="phase-label">Audio Mixer Integration</div>
+    <div class="phase-desc">
+      Enumerate audio sessions via Core Audio API. Map pot 3 to game process audio,
+      pot 4 to comms app audio. Settings UI to configure which app maps to which pot.
+    </div>
+  </div>
+</div>
+
+<div class="phase">
+  <div class="phase-num">4</div>
+  <div class="phase-content">
+    <div class="phase-label">PC &rarr; ESP32 Channel</div>
+    <div class="phase-desc">
+      Send PC state back to SimBee over UDP :5007. Discord notifications,
+      currently playing track, mic mute status. ESP32 can display on T-Display or trigger alerts.
+    </div>
+  </div>
+</div>
+
+<div class="phase">
+  <div class="phase-num">5</div>
+  <div class="phase-content">
+    <div class="phase-label">Command Registry</div>
+    <div class="phase-desc">
+      Extensible command system: mic toggle, audio output switch, app launch,
+      media controls, custom hotkey injection. ESP32 sends <code>cmd=mute</code>,
+      pcBee executes the mapped action.
+    </div>
+  </div>
+</div>
+
+<h2>ESP32 Firmware Changes Needed</h2>
+
+<ul>
+  <li>Add ADC reads for 4 potentiometers in <code>loop()</code></li>
+  <li>Pot 1: map ADC range to 4 positions, set <code>currentView</code>, call <code>updateMaxDisplays()</code></li>
+  <li>Pot 2: map ADC range to T-Display view index (future)</li>
+  <li>Pots 3-4: send ADC values to PC via UDP :5006 (new outbound UDP socket)</li>
+  <li>Optional: listen on UDP :5007 for PC state data to display on T-Display</li>
+</ul>
+
+<h2>Network Impact</h2>
+
+<div class="card">
+  <table>
+    <tr><th>Stream</th><th>Packet Size</th><th>Frequency</th><th>Bandwidth</th></tr>
+    <tr>
+      <td>SimHub &rarr; ESP32</td>
+      <td>~200 bytes</td>
+      <td>20 Hz</td>
+      <td>~4 KB/s</td>
+    </tr>
+    <tr>
+      <td>ESP32 &rarr; pcBee (pots)</td>
+      <td>~60 bytes</td>
+      <td>10 Hz</td>
+      <td>~0.6 KB/s</td>
+    </tr>
+    <tr>
+      <td>pcBee &rarr; ESP32 (state)</td>
+      <td>~100 bytes</td>
+      <td>2 Hz</td>
+      <td>~0.2 KB/s</td>
+    </tr>
+    <tr>
+      <td><strong>Total</strong></td>
+      <td></td>
+      <td></td>
+      <td><strong>~5 KB/s</strong></td>
+    </tr>
+  </table>
+  <p style="color: var(--dim); font-size: 0.9em; margin-top: 8px;">
+    All traffic is LAN-only. Never touches the internet. Negligible router load
+    compared to any media stream (~1-50 MB/s). UDP has zero connection overhead.
+  </p>
+</div>
+
+<h2>File Structure</h2>
+
+<pre>
+pcBee/
+  pcBee.sln
+  pcBee/
+    Program.cs              # Entry point, tray app setup
+    TrayApp.cs              # NotifyIcon, context menu, settings window
+    Services/
+      SimHubBridge.cs       # HTTP poll + UDP send (port 5005)
+      UdpListener.cs        # Receive from ESP32 (port 5006)
+      UdpSender.cs          # Send to ESP32 (port 5007)
+      AudioMixer.cs         # Core Audio API, per-app volume control
+      CommandRegistry.cs    # Extensible command handler
+    Config/
+      AppSettings.cs        # ESP32 IP, ports, audio mappings
+      SettingsForm.cs       # WinForms settings UI
+    Models/
+      TelemetryData.cs      # Parsed SimHub fields
+      PotMessage.cs         # Parsed pot/command from ESP32
+</pre>
+
+<hr>
+
+<div class="footer">
+  <strong>pcBee</strong> &mdash; Part of the Beehive ecosystem<br>
+  Companion to: SimBee (ESP32-S3 T-Display), SimHub Bridge, MAX7219 displays<br>
+  Repository: <code>/Users/andres/dev/beehive</code> (or new repo: <code>pcBee</code>)<br>
+  Created: January 2026
+</div>
+
+</body>
+</html>
