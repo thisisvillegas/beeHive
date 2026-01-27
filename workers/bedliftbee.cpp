@@ -22,7 +22,10 @@
  * - {"capability":{"instance":"bedLift","value":"raise"}}
  * - {"capability":{"instance":"bedLift","value":"lower"}}
  * - {"capability":{"instance":"bedLift","value":"stop"}}
- * - {"capability":{"instance":"bedLift","value":"calibrate"}}
+ * - {"capability":{"instance":"bedLift","value":"sendToTop"}}
+ * - {"capability":{"instance":"bedLift","value":"sendToBottom"}}
+ * - {"capability":{"instance":"bedLift","value":"calibrate_top"}}
+ * - {"capability":{"instance":"bedLift","value":"calibrate_bottom"}}
  */
 
 #include <Arduino.h>
@@ -38,7 +41,7 @@
 // ============== Configuration ==============
 
 #define DEVICE_TYPE "esp32-c3-bedlift"
-#define FIRMWARE_VERSION "1.4.0-bedlift"
+#define FIRMWARE_VERSION "1.5.0-bedlift"
 #define DEFAULT_MQTT_PORT 1883
 
 // GPIO Pins - Relays
@@ -62,6 +65,9 @@
 
 // Default nudge duration - auto-reverse off limit switch
 #define DEFAULT_NUDGE_DURATION 300
+
+// Max duration for send-to-limit mode (safety timeout)
+#define MAX_SEND_TO_LIMIT_DURATION 30000
 
 // Safety thresholds
 #define MIN_SAFE_DISTANCE_CM 10     // Stop if obstacle closer than this
@@ -100,6 +106,7 @@ struct DeviceState {
     int rssi = 0;
     // Bed lift state
     bool isLifting = false;
+    bool sendToLimit = false;   // true = ignore timer, run until limit switch
     String liftDirection = "";  // "raise" or "lower"
     unsigned long liftStartTime = 0;
     bool relayUp = false;
@@ -155,7 +162,7 @@ void loadConfig();
 void saveConfig();
 String getDeviceId();
 void setupWebServer();
-void startLift(const String& direction);
+void startLift(const String& direction, bool toLimit = false);
 void stopLift();
 void stopLift(const String& reason);
 void updateLift();
@@ -250,6 +257,14 @@ void onMqttMessage(const espMqttClientTypes::MessageProperties& properties,
                 mqttLog("[CMD] STOP - Stopping bed lift\n");
                 stopLift("manual");
             }
+            else if (strcmp(value, "sendToTop") == 0) {
+                mqttLog("[CMD] SEND TO TOP - Raising until limit\n");
+                startLift("raise", true);
+            }
+            else if (strcmp(value, "sendToBottom") == 0) {
+                mqttLog("[CMD] SEND TO BOTTOM - Lowering until limit\n");
+                startLift("lower", true);
+            }
             else if (strcmp(value, "calibrate_top") == 0) {
                 Serial.println("[CMD] CALIBRATE TOP - Setting current position as top");
                 calibratePosition("top");
@@ -264,7 +279,7 @@ void onMqttMessage(const espMqttClientTypes::MessageProperties& properties,
 
 // ============== Bed Lift Control ==============
 
-void startLift(const String& direction) {
+void startLift(const String& direction, bool toLimit) {
     // Safety check before moving
     if (!isSafeToMove(direction)) {
         mqttLog("[LIFT] BLOCKED - Not safe to move %s\n", direction.c_str());
@@ -277,6 +292,7 @@ void startLift(const String& direction) {
     state.liftDirection = direction;
     state.liftStartTime = millis();
     state.isLifting = true;
+    state.sendToLimit = toLimit;
     state.lastStopReason = "";
 
     if (direction == "raise") {
@@ -284,14 +300,14 @@ void startLift(const String& direction) {
         digitalWrite(RELAY_DOWN_PIN, RELAY_OFF);
         state.relayUp = true;
         state.relayDown = false;
-        Serial.println("[LIFT] Relay UP activated");
+        Serial.printf("[LIFT] Relay UP activated%s\n", toLimit ? " (send to limit)" : "");
     }
     else if (direction == "lower") {
         digitalWrite(RELAY_UP_PIN, RELAY_OFF);
         digitalWrite(RELAY_DOWN_PIN, RELAY_ON);
         state.relayUp = false;
         state.relayDown = true;
-        Serial.println("[LIFT] Relay DOWN activated");
+        Serial.printf("[LIFT] Relay DOWN activated%s\n", toLimit ? " (send to limit)" : "");
     }
 
     // LED on while lifting
@@ -321,6 +337,7 @@ void stopLift(const String& reason) {
     }
 
     state.isLifting = false;
+    state.sendToLimit = false;
     state.liftDirection = "";
     state.liftStartTime = 0;
     state.relayUp = false;
@@ -335,11 +352,22 @@ void stopLift(const String& reason) {
 void updateLift() {
     if (!state.isLifting) return;
 
-    // Check if timer has expired
-    if (millis() - state.liftStartTime >= config.liftDuration) {
-        Serial.printf("[LIFT] Timer expired (%lu ms)\n", config.liftDuration);
-        stopLift("timer");
-        return;
+    // Check timer
+    unsigned long elapsed = millis() - state.liftStartTime;
+    if (state.sendToLimit) {
+        // Safety timeout for send-to-limit mode
+        if (elapsed >= MAX_SEND_TO_LIMIT_DURATION) {
+            mqttLog("[SAFETY] Send-to-limit timeout (%lu ms) - limit switch may have failed!\n", MAX_SEND_TO_LIMIT_DURATION);
+            stopLift("safety_timeout");
+            return;
+        }
+    } else {
+        // Normal timed lift
+        if (elapsed >= config.liftDuration) {
+            Serial.printf("[LIFT] Timer expired (%lu ms)\n", config.liftDuration);
+            stopLift("timer");
+            return;
+        }
     }
 
     // Safety: Check limit switch (directional)
@@ -783,6 +811,14 @@ void publishDiscovery() {
     opt3["name"] = "Stop";
     opt3["value"] = "stop";
 
+    JsonObject opt4 = options.add<JsonObject>();
+    opt4["name"] = "Send to Top";
+    opt4["value"] = "sendToTop";
+
+    JsonObject opt5 = options.add<JsonObject>();
+    opt5["name"] = "Send to Bottom";
+    opt5["value"] = "sendToBottom";
+
     doc["sensors"] = JsonArray();
     doc["timestamp"] = state.uptime;
 
@@ -797,6 +833,7 @@ void publishState() {
     JsonDocument doc;
 
     doc["isLifting"] = state.isLifting;
+    doc["sendToLimit"] = state.sendToLimit;
     doc["direction"] = state.liftDirection;
     doc["relayUp"] = state.relayUp;
     doc["relayDown"] = state.relayDown;
@@ -985,6 +1022,11 @@ void setupWebServer() {
                 <button class="btn btn-lower" onclick="fetch('/lift?dir=lower').then(()=>location.reload())">LOWER</button>
                 <button class="btn btn-stop btn-full" onclick="fetch('/lift?dir=stop').then(()=>location.reload())">STOP</button>
             </div>
+            <h3 style="margin-top:15px;margin-bottom:10px;color:#888;">Send to Limit</h3>
+            <div class="btn-grid">
+                <button class="btn btn-raise" onclick="fetch('/lift?dir=sendToTop').then(()=>location.reload())">SEND TO TOP</button>
+                <button class="btn btn-lower" onclick="fetch('/lift?dir=sendToBottom').then(()=>location.reload())">SEND TO BOTTOM</button>
+            </div>
         </div>
 
         <a href="/config" class="btn btn-secondary">Settings</a>
@@ -1097,6 +1139,12 @@ void setupWebServer() {
             } else if (dir == "stop") {
                 stopLift();
                 request->send(200, "text/plain", "STOPPED");
+            } else if (dir == "sendToTop") {
+                startLift("raise", true);
+                request->send(200, "text/plain", "SENDING TO TOP");
+            } else if (dir == "sendToBottom") {
+                startLift("lower", true);
+                request->send(200, "text/plain", "SENDING TO BOTTOM");
             } else {
                 request->send(400, "text/plain", "Invalid direction");
             }
