@@ -72,6 +72,12 @@ WiFiManager wifiManager;
 #define FAN_PWM_CHANNEL 0
 #define FAN_PWM_FREQ 25000    // 25kHz - standard for 4-pin PWM fans
 #define FAN_PWM_RESOLUTION 8  // 0-255 duty cycle
+
+// Potentiometers (view selectors)
+#define POT_MAX_VIEW_PIN 1    // Top-left pot: MAX7219 view selector
+#define POT_TFT_VIEW_PIN 3    // Top-right pot: TFT view selector
+#define POT_FUTURE1_PIN 4     // Future use
+// Note: ADC on ESP32-S3 is 12-bit (0-4095)
 #define FAN_MAX_SPEED_KMH 200 // Speed at which fan hits 100%
 
 // ============== Hardware ==============
@@ -336,7 +342,9 @@ void handlePortAPin(int pin, bool pressed) {
         return;
     }
 
-    // PA2-PA7: Toggle switches
+    // PA2-PA7: Toggle switches - only send key on PRESS (not release)
+    if (!pressed) return;  // Ignore release events
+
     uint8_t key = portAKey[pin];
     if (key != 0) {
         if (pin == 7) {
@@ -419,29 +427,66 @@ void handlePortBPin(int pin, bool pressed) {
     }
 
     // PB3-PB7: Push buttons - send Ctrl + key (only on press)
-    if (pressed) {
-        uint8_t key = portBKey[pin];
-        if (key != 0) {
-            NimBLEServer* pServer = NimBLEDevice::getServer();
-            int connCount = pServer ? pServer->getConnectedCount() : 0;
+    if (!pressed) return;  // Ignore release events
 
-            if (connCount > 0) {
-                delay(20);
-                keyboard.press(KEY_LEFT_CTRL);
-                keyboard.press(key);
-                delay(100);
-                keyboard.releaseAll();
-                delay(20);
+    uint8_t key = portBKey[pin];
+    if (key != 0) {
+        NimBLEServer* pServer = NimBLEDevice::getServer();
+        int connCount = pServer ? pServer->getConnectedCount() : 0;
 
-                lastKey = "C+" + String((char)key);
-                lastKeyTime = millis();
-                Serial.printf("[BLE] Sent: Ctrl+%c\n", key);
-            } else {
-                lastKey = "NO BLE!";
-                lastKeyTime = millis();
-                Serial.println("[BLE] Not connected - key ignored");
-            }
+        if (connCount > 0) {
+            delay(20);
+            keyboard.press(KEY_LEFT_CTRL);
+            keyboard.press(key);
+            delay(100);
+            keyboard.releaseAll();
+            delay(20);
+
+            lastKey = "C+" + String((char)key);
+            lastKeyTime = millis();
+            Serial.printf("[BLE] Sent: Ctrl+%c\n", key);
+        } else {
+            lastKey = "NO BLE!";
+            lastKeyTime = millis();
+            Serial.println("[BLE] Not connected - key ignored");
         }
+    }
+}
+
+// ============== Potentiometer View Selection ==============
+
+void handlePots() {
+    static unsigned long lastPotRead = 0;
+    static int lastMaxView = -1;
+    static int lastTftView = -1;
+
+    // Read pots every 100ms (no need to be super fast)
+    if (millis() - lastPotRead < 100) return;
+    lastPotRead = millis();
+
+    // Read MAX7219 view selector pot (GPIO 1)
+    int maxPotRaw = analogRead(POT_MAX_VIEW_PIN);
+    // Map 0-4095 to 0-(NUM_VIEWS-1), with some deadband at edges
+    int newMaxView = map(maxPotRaw, 100, 3995, 0, NUM_VIEWS - 1);
+    newMaxView = constrain(newMaxView, 0, NUM_VIEWS - 1);
+
+    if (newMaxView != lastMaxView) {
+        lastMaxView = newMaxView;
+        currentView = newMaxView;
+        updateMaxDisplays();
+        Serial.printf("[POT] MAX view: %d (%s) raw=%d\n", currentView, viewNames[currentView], maxPotRaw);
+    }
+
+    // Read TFT view selector pot (GPIO 3)
+    int tftPotRaw = analogRead(POT_TFT_VIEW_PIN);
+    // Map 0-4095 to 0-(NUM_TFT_VIEWS-1)
+    int newTftView = map(tftPotRaw, 100, 3995, 0, NUM_TFT_VIEWS - 1);
+    newTftView = constrain(newTftView, 0, NUM_TFT_VIEWS - 1);
+
+    if (newTftView != lastTftView) {
+        lastTftView = newTftView;
+        tftView = newTftView;
+        Serial.printf("[POT] TFT view: %d (%s) raw=%d\n", tftView, tftViewNames[tftView], tftPotRaw);
     }
 }
 
@@ -1148,7 +1193,14 @@ void setup() {
     // Buttons
     pinMode(BUTTON_LEFT, INPUT_PULLUP);
     pinMode(BUTTON_RIGHT, INPUT_PULLUP);
-    
+
+    // Potentiometers (view selectors) - ADC input
+    pinMode(POT_MAX_VIEW_PIN, INPUT);
+    pinMode(POT_TFT_VIEW_PIN, INPUT);
+    pinMode(POT_FUTURE1_PIN, INPUT);
+    analogReadResolution(12);  // 12-bit ADC (0-4095)
+    Serial.printf("[POT] Initialized on GPIO %d, %d, %d\n", POT_MAX_VIEW_PIN, POT_TFT_VIEW_PIN, POT_FUTURE1_PIN);
+
     // Start BLE keyboard (initializes NimBLE)
     Serial.println("[BLE] Initializing keyboard...");
     keyboard.begin();
@@ -1278,6 +1330,7 @@ void publishState() {
 void loop() {
     handleButtons();
     handleMCP();
+    handlePots();
 
     // SimHub UDP - non-blocking read
     int packetSize = simhubUDP.parsePacket();
@@ -1308,10 +1361,17 @@ void loop() {
         publishState();
     }
     
+    // BLE keep-alive: send null report every 2 seconds to prevent sleep
+    static unsigned long lastBleKeepAlive = 0;
+    bool connected = isActuallyConnected();
+    if (connected && millis() - lastBleKeepAlive > 2000) {
+        lastBleKeepAlive = millis();
+        keyboard.releaseAll();  // Sends empty report, keeps connection alive
+    }
+
     // Update display periodically or on connection change
     static unsigned long lastDraw = 0;
-    bool connected = isActuallyConnected();
-    
+
     if (connected != wasConnected || millis() - lastDraw > 1000) {
         if (connected != wasConnected) {
             Serial.printf("[BLE] State changed: %s\n", connected ? "CONNECTED" : "DISCONNECTED");
