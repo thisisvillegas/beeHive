@@ -5,9 +5,12 @@
  * WiFi + BLE + MQTT + MCP23017 I/O Expander + SimHub + PWM Fan.
  *
  * MCP23017 Port A (PA0-PA7):
- *   PA0: Toggle - 'T' + wind enable/disable
+ *   PA0: Toggle - MASTER SWITCH (standby/active mode)
  *   PA1: Push - Love bomb (MQTT, placeholder)
- *   PA2-PA7: Toggle switches - Y, U, I, G, H, J
+ *   PA2: Toggle - 'Y'
+ *   PA3: Toggle - 'U'
+ *   PA4: Toggle - Wind enable/disable
+ *   PA5-PA7: Toggle switches - G, H, J
  *
  * MCP23017 Port B (PB0-PB7):
  *   PB0-PB2: BedLiftBee control (MQTT, placeholder)
@@ -16,12 +19,14 @@
  * Features:
  *   - SimHub UDP telemetry receiver (port 5005)
  *   - PWM fan control based on car speed
- *   - Wind toggle (PA0) to enable/disable fans
+ *   - Master switch (PA0) for standby/active mode
+ *   - Wind toggle (PA4) to enable/disable fans
  *   - Display shows port status and wind state
  */
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <WiFiManager.h>
 #include <WiFiUdp.h>
 #include <Wire.h>
 #include <espMqttClient.h>
@@ -43,9 +48,8 @@
 #define MCP_GPIOA    0x12   // Port A data
 #define MCP_GPIOB    0x13   // Port B data
 
-// WiFi credentials
-#define WIFI_SSID "Remus2.0"
-#define WIFI_PASS "Z3k3Z3k3"
+// WiFiManager (no hardcoded credentials - uses captive portal)
+WiFiManager wifiManager;
 
 // MQTT
 #define MQTT_SERVER "192.168.0.95"
@@ -78,8 +82,9 @@
 #define TFT_POWER 15
 
 // Display
-#define SCREEN_WIDTH 170
-#define SCREEN_HEIGHT 320
+// Landscape mode (90° CCW rotation)
+#define SCREEN_WIDTH 320
+#define SCREEN_HEIGHT 170
 
 // Colors
 #define COLOR_BG      TFT_BLACK
@@ -116,8 +121,11 @@ uint8_t currentPortA = 0xFF;
 uint8_t lastPortB = 0xFF;  // All high (pull-ups)
 uint8_t currentPortB = 0xFF;
 
-// Wind control
-bool windEnabled = true;  // Toggle with PA0
+// Master switch (PA0) - controls MAX7219 and TFT mode
+bool masterEnabled = true;  // ON = active, OFF = standby
+
+// Wind control (PA4)
+bool windEnabled = true;  // Toggle with PA4
 
 // SimHub UDP
 WiFiUDP simhubUDP;
@@ -155,6 +163,11 @@ int lastTriggerPin = -1;
 int currentView = 0;
 #define NUM_VIEWS 4
 const char* viewNames[] = {"Speed", "Tire Wear", "Tire Temp", "Lap Times"};
+
+// TFT view cycling (right button)
+int tftView = 0;  // 0 = Debug, 1 = Racing
+#define NUM_TFT_VIEWS 2
+const char* tftViewNames[] = {"Debug", "Racing"};
 
 // ============== Forward Declarations ==============
 
@@ -208,13 +221,13 @@ bool mcpInit() {
 }
 
 // Switch mappings: PA pin -> key to send (0 = special handling)
-// PA0=T + wind toggle, PA1=love bomb (later), PA2-4=Y,U,I, PA5-7=G,H,J
+// PA0=master, PA1=love bomb, PA2-3=Y,U, PA4=wind, PA5-7=G,H,J
 const uint8_t portAKey[] = {
-    't',        // PA0 - Toggle + wind enable/disable
+    0,          // PA0 - MASTER SWITCH (special handling)
     0,          // PA1 - Love bomb (MQTT, handled separately)
     'y',        // PA2 - Toggle
     'u',        // PA3 - Toggle
-    'i',        // PA4 - Toggle
+    0,          // PA4 - WIND TOGGLE (special handling)
     'g',        // PA5 - Toggle
     'h',        // PA6 - Toggle
     'j'         // PA7 - Toggle
@@ -272,7 +285,29 @@ void handlePortAPin(int pin, bool pressed) {
     // pressed = true when pin goes LOW (switch activated)
 
     if (pin == 0) {
-        // PA0: Wind enable switch - ON=wind ON, OFF=wind OFF
+        // PA0: MASTER SWITCH - controls MAX7219 displays and TFT mode
+        // pressed (switch ON/LOW) = active mode
+        // released (switch OFF/HIGH) = standby mode
+        masterEnabled = pressed;
+        Serial.printf("[Master] %s\n", masterEnabled ? "ACTIVE" : "STANDBY");
+
+        if (masterEnabled) {
+            // Active mode: enable MAX7219, switch to Racing view
+            tftView = 1;  // Racing view
+            Serial.println("[TFT] Switched to Racing (master ON)");
+        } else {
+            // Standby mode: blank MAX7219, TFT shows standby
+            // MAX7219 will be blanked in updateMaxDisplays()
+            // TFT standby view will be drawn in drawStandbyView()
+            setFanSpeed(0);  // Turn off fan in standby
+            Serial.println("[TFT] Switched to Standby (master OFF)");
+        }
+        updateMaxDisplays();
+        return;
+    }
+
+    if (pin == 4) {
+        // PA4: Wind enable switch - ON=wind ON, OFF=wind OFF
         // pressed (switch ON/LOW) = enable wind
         // released (switch OFF/HIGH) = disable wind
         windEnabled = pressed;
@@ -280,8 +315,6 @@ void handlePortAPin(int pin, bool pressed) {
         if (!windEnabled) {
             setFanSpeed(0);  // Turn off fan immediately
         }
-        // Send T on every toggle
-        sendKeyPress('T', portALabel[0]);
         return;
     }
 
@@ -620,6 +653,18 @@ void max7219Init() {
     for (int i = 1; i <= 8; i++) max7219SendAll(i, 0x0F);
 }
 
+// Blank all MAX7219 displays (standby mode)
+void max7219Blank() {
+    // Put all displays in shutdown mode (all segments off)
+    max7219SendAll(0x0C, 0x00);
+}
+
+// Wake up MAX7219 displays (active mode)
+void max7219Wake() {
+    // Put all displays back in normal operation
+    max7219SendAll(0x0C, 0x01);
+}
+
 // Show a number right-aligned within a digit range (BCD mode)
 void max7219ShowDigits(int device, int value, int startDigit, int numDigits) {
     for (int i = 0; i < numDigits; i++) {
@@ -791,6 +836,15 @@ void showView3() {
 
 // Master display update — call after data changes or view switch
 void updateMaxDisplays() {
+    // Check master switch - blank displays in standby mode
+    if (!masterEnabled) {
+        max7219Blank();
+        return;
+    }
+
+    // Ensure displays are awake
+    max7219Wake();
+
     switch (currentView) {
         case 0: showView0(); break;
         case 1: showView1(); break;
@@ -801,89 +855,204 @@ void updateMaxDisplays() {
 
 // ============== Display ==============
 
-void drawScreen() {
-    spr.fillSprite(COLOR_BG);
+// Helper: format milliseconds as lap time string
+String formatLapTime(unsigned long ms) {
+    if (ms == 0) return "--:--.---";
+    int minutes = ms / 60000;
+    int seconds = (ms % 60000) / 1000;
+    int millis = ms % 1000;
+    char buf[12];
+    snprintf(buf, sizeof(buf), "%d:%02d.%03d", minutes, seconds, millis);
+    return String(buf);
+}
 
-    // Title (top half - invisible on broken screen, but keeps layout)
-    spr.setTextColor(COLOR_TEXT);
-    spr.setTextDatum(TC_DATUM);
-    spr.drawString("SimBee Keyboard", SCREEN_WIDTH/2, 20, 4);
-
-    // Current view name
-    int viewY = 170;
-    spr.setTextDatum(TL_DATUM);
-    spr.setTextColor(COLOR_ACCENT);
-    spr.drawString(String("View: ") + viewNames[currentView], 10, viewY, 2);
+// Standby View - shown when master switch is OFF
+void drawStandbyView() {
+    // Center the standby message
+    spr.setTextDatum(MC_DATUM);
     spr.setTextColor(COLOR_DIM);
-    spr.drawString(String(currentView + 1) + "/" + String(NUM_VIEWS), 145, viewY, 2);
+    spr.drawString("STANDBY", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 - 20, 4);
+    spr.setTextColor(0x4208);  // Darker gray
+    spr.drawString("Flip master switch to activate", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 20, 2);
+}
 
-    // Last key sent
-    int keyY = 192;
-    spr.setTextColor(COLOR_DIM);
-    spr.drawString("Key:", 10, keyY, 2);
-    spr.setTextColor(COLOR_TEXT);
-    spr.drawString(lastKey, 50, keyY, 2);
-    if (lastKeyTime > 0) {
-        unsigned long ago = (millis() - lastKeyTime) / 1000;
-        spr.setTextColor(COLOR_DIM);
-        spr.drawString(ago < 60 ? String(ago) + "s" : String(ago / 60) + "m",
-                       130, keyY, 1);
-    }
-
-    // Fan/Wind bar
-    int fanY = 214;
+// Debug View - connectivity, ports, wind, key
+void drawDebugView() {
+    // Left column: Connection status
+    int col1 = 10;
     spr.setTextDatum(TL_DATUM);
-    spr.setTextColor(COLOR_DIM);
-    spr.drawString("Wind:", 10, fanY, 2);
-    spr.setTextColor(windEnabled ? COLOR_ACCENT : COLOR_WARN);
-    spr.drawString(windEnabled ? "ON" : "OFF", 60, fanY, 2);
-    spr.fillRect(95, fanY, 50, 14, COLOR_DIM);
-    int barWidth = map(fanSpeedPercent, 0, 100, 0, 50);
-    if (barWidth > 0) {
-        spr.fillRect(95, fanY, barWidth, 14, windEnabled ? COLOR_ACCENT : COLOR_WARN);
-    }
     spr.setTextColor(COLOR_TEXT);
-    spr.drawString(String(fanSpeedPercent) + "%", 150, fanY, 1);
+    spr.drawString("DEBUG", col1, 5, 2);
 
-    // Connection status dots (compact row)
-    int connY = 238;
-    spr.setTextDatum(TL_DATUM);
     wifiConnected = WiFi.status() == WL_CONNECTED;
     mqttConnected = mqtt.connected();
     bool bleOk = isActuallyConnected();
-    // WiFi dot
-    spr.setTextColor(COLOR_DIM);
-    spr.drawString("W", 10, connY, 1);
-    spr.fillCircle(22, connY + 4, 4, wifiConnected ? COLOR_ACCENT : COLOR_WARN);
-    // MQTT dot
-    spr.drawString("M", 40, connY, 1);
-    spr.fillCircle(53, connY + 4, 4, mqttConnected ? COLOR_ACCENT : COLOR_WARN);
-    // BLE dot
-    spr.drawString("B", 70, connY, 1);
-    spr.fillCircle(82, connY + 4, 4, bleOk ? COLOR_ACCENT : COLOR_WARN);
-    // MCP dot
-    spr.drawString("I2C", 100, connY, 1);
-    spr.fillCircle(125, connY + 4, 4, mcpFound ? COLOR_ACCENT : COLOR_WARN);
 
-    // Port indicators (compact)
-    int portY = 258;
+    int y = 28;
     spr.setTextColor(COLOR_DIM);
-    spr.drawString("A:", 5, portY, 1);
+    spr.drawString("WiFi", col1, y, 2);
+    spr.fillCircle(col1 + 50, y + 7, 5, wifiConnected ? COLOR_ACCENT : COLOR_WARN);
+
+    y += 20;
+    spr.drawString("MQTT", col1, y, 2);
+    spr.fillCircle(col1 + 50, y + 7, 5, mqttConnected ? COLOR_ACCENT : COLOR_WARN);
+
+    y += 20;
+    spr.drawString("BLE", col1, y, 2);
+    spr.fillCircle(col1 + 50, y + 7, 5, bleOk ? COLOR_ACCENT : COLOR_WARN);
+
+    y += 20;
+    spr.drawString("I2C", col1, y, 2);
+    spr.fillCircle(col1 + 50, y + 7, 5, mcpFound ? COLOR_ACCENT : COLOR_WARN);
+
+    // Wind status
+    y += 22;
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("Wind", col1, y, 2);
+    spr.setTextColor(windEnabled ? COLOR_ACCENT : COLOR_WARN);
+    spr.drawString(windEnabled ? "ON" : "OFF", col1 + 50, y, 2);
+
+    y += 18;
+    spr.fillRect(col1, y, 60, 10, COLOR_DIM);
+    int barWidth = map(fanSpeedPercent, 0, 100, 0, 60);
+    if (barWidth > 0) {
+        spr.fillRect(col1, y, barWidth, 10, windEnabled ? COLOR_ACCENT : COLOR_WARN);
+    }
+
+    // Center column: Port A/B indicators (vertical)
+    int col2 = 100;
+    spr.setTextColor(COLOR_TEXT);
+    spr.drawString("PORTS", col2, 5, 2);
+
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("A", col2, 28, 1);
     for (int i = 0; i < 8; i++) {
         uint8_t bit = (currentPortA >> i) & 0x01;
-        spr.fillCircle(25 + i * 18, portY + 5, 5, (bit == 0) ? COLOR_ACCENT : COLOR_DIM);
-    }
-    int portBY = 278;
-    spr.drawString("B:", 5, portBY, 1);
-    for (int i = 0; i < 8; i++) {
-        uint8_t bit = (currentPortB >> i) & 0x01;
-        spr.fillCircle(25 + i * 18, portBY + 5, 5, (bit == 0) ? COLOR_ACCENT : COLOR_DIM);
+        spr.fillCircle(col2 + 15 + i * 12, 32, 4, (bit == 0) ? COLOR_ACCENT : COLOR_DIM);
     }
 
-    // Footer
+    spr.drawString("B", col2, 48, 1);
+    for (int i = 0; i < 8; i++) {
+        uint8_t bit = (currentPortB >> i) & 0x01;
+        spr.fillCircle(col2 + 15 + i * 12, 52, 4, (bit == 0) ? COLOR_ACCENT : COLOR_DIM);
+    }
+
+    // Last trigger
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("Last:", col2, 68, 1);
+    if (lastTriggerPin >= 0) {
+        spr.setTextColor(COLOR_ACCENT);
+        spr.drawString(String(lastTriggerPort) + String(lastTriggerPin), col2 + 35, 68, 1);
+    }
+
+    // MAX view
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("MAX:", col2, 85, 1);
+    spr.setTextColor(COLOR_TEXT);
+    spr.drawString(viewNames[currentView], col2 + 35, 85, 1);
+
+    // Last key
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("Key:", col2, 102, 1);
+    spr.setTextColor(COLOR_TEXT);
+    spr.drawString(lastKey.length() > 0 ? lastKey : "-", col2 + 35, 102, 1);
+
+    // Right column: SimHub data preview
+    int col3 = 220;
+    spr.setTextColor(COLOR_TEXT);
+    spr.drawString("SIM", col3, 5, 2);
+
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("Spd", col3, 28, 1);
+    spr.setTextColor(COLOR_TEXT);
+    spr.drawString(String(carSpeedKmh), col3 + 30, 28, 1);
+
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("Pos", col3, 45, 1);
+    spr.setTextColor(COLOR_TEXT);
+    spr.drawString(String(position) + "/" + String(opponents + 1), col3 + 30, 45, 1);
+
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("Lap", col3, 62, 1);
+    spr.setTextColor(COLOR_TEXT);
+    spr.drawString(String(currentLap) + "/" + String(totalLaps), col3 + 30, 62, 1);
+}
+
+// Racing View - big speed, position, lap info
+void drawRacingView() {
+    // Big speed in center-left
+    spr.setTextDatum(TL_DATUM);
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("SPEED", 10, 5, 2);
+
+    spr.setTextDatum(TL_DATUM);
+    spr.setTextColor(COLOR_TEXT);
+    spr.drawString(String(carSpeedKmh), 10, 25, 7);  // Big font
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("km/h", 10, 85, 2);
+
+    // Position box (top right)
+    int posX = 160;
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("POS", posX, 5, 2);
+    spr.setTextColor(COLOR_ACCENT);
+    spr.drawString(String(position), posX, 25, 6);
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("/" + String(opponents + 1), posX + 40, 40, 2);
+
+    // Lap box (middle right)
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("LAP", posX + 80, 5, 2);
+    spr.setTextColor(COLOR_TEXT);
+    spr.drawString(String(currentLap), posX + 80, 25, 4);
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("/" + String(totalLaps), posX + 110, 30, 2);
+
+    // Best lap time (bottom)
+    spr.setTextDatum(TL_DATUM);
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("BEST", 160, 70, 2);
+    spr.setTextColor(COLOR_ACCENT);
+    spr.drawString(formatLapTime(sessionBestLapMs), 160, 90, 4);
+
+    // Last lap (bottom right)
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("LAST", 160, 120, 1);
+    spr.setTextColor(COLOR_TEXT);
+    spr.drawString(formatLapTime(lastLapMs), 200, 120, 2);
+
+    // Wind indicator (bottom left)
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("Wind:", 10, 110, 1);
+    spr.fillRect(50, 110, 80, 8, COLOR_DIM);
+    int barWidth = map(fanSpeedPercent, 0, 100, 0, 80);
+    if (barWidth > 0) {
+        spr.fillRect(50, 110, barWidth, 8, windEnabled ? COLOR_ACCENT : COLOR_WARN);
+    }
+}
+
+void drawScreen() {
+    spr.fillSprite(COLOR_BG);
+
+    // Check master switch first
+    if (!masterEnabled) {
+        drawStandbyView();
+        spr.pushSprite(0, 0);
+        return;
+    }
+
+    // Draw current TFT view
+    if (tftView == 0) {
+        drawDebugView();
+    } else {
+        drawRacingView();
+    }
+
+    // Footer with view indicator
     spr.setTextDatum(TC_DATUM);
     spr.setTextColor(COLOR_DIM);
-    spr.drawString("v2.0.0  BTN1=view", SCREEN_WIDTH/2, SCREEN_HEIGHT - 10, 1);
+    String footer = "v2.0.0  [" + String(tftViewNames[tftView]) + "]  BTN2=view";
+    spr.drawString(footer, SCREEN_WIDTH/2, SCREEN_HEIGHT - 12, 1);
 
     spr.pushSprite(0, 0);
 }
@@ -918,10 +1087,12 @@ void handleButtons() {
         Serial.printf("[View] Switched to %d: %s\n", currentView, viewNames[currentView]);
     }
 
-    // Right button - send 'b'
+    // Right button - toggle TFT view
     if (buttonRight == LOW && millis() - lastRightPress > debounceMs) {
         lastRightPress = millis();
-        sendKey('b');
+        tftView = (tftView + 1) % NUM_TFT_VIEWS;
+        drawScreen();
+        Serial.printf("[TFT] Switched to %d: %s\n", tftView, tftViewNames[tftView]);
     }
 }
 
@@ -933,63 +1104,50 @@ void setup() {
 
     Serial.println("\n=== SimBee Keyboard v2.0.0 ===");
 
+    // Display first so we can show status
+    pinMode(TFT_BACKLIGHT, OUTPUT);
+    pinMode(TFT_POWER, OUTPUT);
+    digitalWrite(TFT_POWER, HIGH);
+    tft.init();
+    tft.setRotation(3);
+    tft.fillScreen(COLOR_BG);
+    tft.invertDisplay(true);
+    digitalWrite(TFT_BACKLIGHT, HIGH);
+    spr.createSprite(SCREEN_WIDTH, SCREEN_HEIGHT);
+    spr.setSwapBytes(true);
+
+    // Show WiFi status on screen
+    tft.setTextColor(COLOR_TEXT);
+    tft.setTextDatum(MC_DATUM);
+    tft.drawString("WiFi Setup...", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 - 20, 2);
+    tft.drawString("Connect to: SimBee-Setup", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 10, 2);
+
+    // WiFi via WiFiManager (captive portal if not configured)
+    Serial.println("[WiFi] Starting WiFiManager...");
+    wifiManager.setConfigPortalTimeout(180);  // 3 min timeout
+
+    if (!wifiManager.autoConnect("SimBee-Setup")) {
+        Serial.println("[WiFi] Failed to connect - restarting");
+        tft.fillScreen(COLOR_BG);
+        tft.drawString("WiFi Failed!", SCREEN_WIDTH/2, SCREEN_HEIGHT/2, 2);
+        delay(3000);
+        ESP.restart();
+    }
+
+    Serial.printf("[WiFi] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
+    tft.fillScreen(COLOR_BG);
+    tft.drawString("Connected!", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 - 10, 2);
+    tft.drawString(WiFi.localIP().toString(), SCREEN_WIDTH/2, SCREEN_HEIGHT/2 + 10, 2);
+    delay(1000);
+
     // I2C for MCP23017 (QWIIC port)
     Wire.begin(I2C_SDA, I2C_SCL);
-    Wire.setClock(100000);  // 100kHz
+    Wire.setClock(100000);
     Serial.printf("[I2C] Initialized on SDA=%d, SCL=%d\n", I2C_SDA, I2C_SCL);
 
     // Buttons
     pinMode(BUTTON_LEFT, INPUT_PULLUP);
     pinMode(BUTTON_RIGHT, INPUT_PULLUP);
-    
-    // Display power
-    pinMode(TFT_POWER, OUTPUT);
-    digitalWrite(TFT_POWER, HIGH);
-    
-    // Display init
-    tft.init();
-    tft.setRotation(0);  // Portrait
-    tft.fillScreen(COLOR_BG);
-    tft.invertDisplay(true);
-    
-    // Backlight
-    pinMode(TFT_BACKLIGHT, OUTPUT);
-    digitalWrite(TFT_BACKLIGHT, HIGH);
-    
-    // Sprite for flicker-free drawing
-    spr.createSprite(SCREEN_WIDTH, SCREEN_HEIGHT);
-    spr.setSwapBytes(true);
-    
-    // Connect to WiFi first
-    tft.setTextColor(COLOR_TEXT);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("Connecting WiFi...", SCREEN_WIDTH/2, SCREEN_HEIGHT/2 - 20, 2);
-    
-    Serial.println("[WiFi] Connecting...");
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-    
-    // Wait up to 10 seconds for WiFi
-    int wifiAttempts = 0;
-    while (WiFi.status() != WL_CONNECTED && wifiAttempts < 20) {
-        delay(500);
-        Serial.print(".");
-        wifiAttempts++;
-    }
-    
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("\n[WiFi] Connected! IP: %s\n", WiFi.localIP().toString().c_str());
-        tft.drawString(WiFi.localIP().toString(), SCREEN_WIDTH/2, SCREEN_HEIGHT/2, 2);
-    } else {
-        Serial.println("\n[WiFi] Failed to connect");
-        tft.drawString("WiFi failed", SCREEN_WIDTH/2, SCREEN_HEIGHT/2, 2);
-    }
-    
-    delay(500);
-    
-    // Now start BLE
-    tft.fillScreen(COLOR_BG);
-    tft.drawString("Starting BLE...", SCREEN_WIDTH/2, SCREEN_HEIGHT/2, 2);
     
     // Start BLE keyboard (initializes NimBLE)
     Serial.println("[BLE] Initializing keyboard...");
@@ -1031,6 +1189,19 @@ void setup() {
         currentPortB = lastPortB;
         Serial.printf("[MCP] Initial state - Port A: 0x%02X  Port B: 0x%02X\n",
                       currentPortA, currentPortB);
+
+        // Initialize master switch state from PA0 (LOW = ON/active)
+        masterEnabled = !(currentPortA & 0x01);
+        Serial.printf("[Master] Initial state: %s\n", masterEnabled ? "ACTIVE" : "STANDBY");
+
+        // Initialize wind switch state from PA4 (LOW = ON/enabled)
+        windEnabled = !(currentPortA & 0x10);
+        Serial.printf("[Wind] Initial state: %s\n", windEnabled ? "ENABLED" : "DISABLED");
+
+        // Set initial TFT view based on master switch
+        if (masterEnabled) {
+            tftView = 1;  // Racing view when active
+        }
     }
 
     // Initialize SimHub UDP listener
