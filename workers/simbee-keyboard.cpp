@@ -54,7 +54,8 @@ WiFiManager wifiManager;
 // MQTT
 #define MQTT_SERVER "192.168.0.95"
 #define MQTT_PORT 1883
-#define DEVICE_ID "simbee-keyboard"
+#define DEVICE_TYPE "simbee-keyboard"
+#define FIRMWARE_VERSION "2.2.0"
 #define COMPANION_ID "c404f416a398"  // kayciBee1
 #define BEDLIFT_ID "2ce238d4db1c"    // BedLiftBee
 
@@ -76,7 +77,8 @@ WiFiManager wifiManager;
 // Potentiometers (view selectors)
 #define POT_MAX_VIEW_PIN 1    // Top-left pot: MAX7219 view selector
 #define POT_TFT_VIEW_PIN 3    // Top-right pot: TFT view selector
-#define POT_FUTURE1_PIN 4     // Future use
+#define POT_FUTURE1_PIN 10    // Manual fan control
+#define POT_FUTURE2_PIN 16    // 4th pot
 // Note: ADC on ESP32-S3 is 12-bit (0-4095)
 #define FAN_MAX_SPEED_KMH 200 // Speed at which fan hits 100%
 
@@ -109,9 +111,12 @@ espMqttClient mqtt;
 BleKeyboard keyboard("SimBee", "Beehive", 100);
 
 // MQTT topics
+String deviceId;
+String discoveryTopic;
 String topicState;
 String topicSet;
 String topicAvail;
+String topicHealth;
 
 // Track connection states
 bool wifiConnected = false;
@@ -133,6 +138,18 @@ bool masterEnabled = true;  // ON = active, OFF = standby
 // Wind control (PA4)
 bool windEnabled = true;  // Toggle with PA4
 
+// Mode B toggle (PB0) - changes button mappings
+bool modeB = false;  // OFF = Mode A (green), ON = Mode B (red)
+
+// Manual fan mode (PB1) - when ON, POT controls fan instead of SimHub
+bool manualFanMode = false;
+
+// Heart animation state
+bool heartAnimActive = false;
+unsigned long heartAnimStart = 0;
+#define HEART_ANIM_DURATION 3000  // 3 seconds
+String heartMessage = "";
+
 // SimHub UDP
 WiFiUDP simhubUDP;
 char udpBuffer[256];
@@ -143,6 +160,12 @@ String simhubData = "";
 int fanSpeedPercent = 0;      // 0-100%
 int carSpeedKmh = 0;          // From SimHub
 bool fanTestMode = false;     // True during startup test
+
+// Pot raw values (for debug display)
+int potMaxRaw = 0;   // GPIO 1 - MAX view selector
+int potTftRaw = 0;   // GPIO 3 - TFT view selector
+int potFanRaw = 0;   // GPIO 4 - Manual fan control
+int pot4Raw = 0;     // GPIO 12 - 4th pot (unassigned)
 
 // Lap times (milliseconds, 0 = no data)
 int sessionBestLapMs = 0;
@@ -180,6 +203,11 @@ const char* tftViewNames[] = {"Debug", "Racing"};
 bool isActuallyConnected();
 void connectMQTT();
 void publishState();
+void publishDiscovery();
+void publishHealth();
+String getDeviceId();
+void drawHeart(int cx, int cy, int size, uint16_t color);
+void startHeartAnimation(const char* message);
 void setFanSpeed(int percent);
 void updateMaxDisplays();
 void onMqttConnect(bool sessionPresent);
@@ -325,17 +353,18 @@ void handlePortAPin(int pin, bool pressed) {
     }
 
     if (pin == 1) {
-        // PA1: Love bomb - send to companion bee
+        // PA1: Love bomb - send heart animation to companion bee (KayciBee)
         if (pressed) {
             String topic = "homecontrol/devices/" COMPANION_ID "/set";
-            String payload = "{\"capability\":{\"instance\":\"loveBomb\",\"value\":true}}";
+            // KayciBee expects "loveMessage" with type (1=pulse) and optional message
+            String payload = "{\"capability\":{\"instance\":\"loveMessage\",\"type\":1,\"message\":\"From SimBee\"}}";
             if (mqtt.connected()) {
                 mqtt.publish(topic.c_str(), 0, false, payload.c_str());
-                Serial.println("[PA1] Love bomb sent to kayciBee!");
-                lastKey = "LoveBomb!";
+                Serial.println("[PA1] Love message sent to kayciBee!");
+                lastKey = "Love!";
             } else {
-                Serial.println("[PA1] Love bomb failed - no MQTT");
-                lastKey = "LB:NoMQTT";
+                Serial.println("[PA1] Love message failed - no MQTT");
+                lastKey = "NoMQTT";
             }
             lastKeyTime = millis();
         }
@@ -399,29 +428,32 @@ void handlePortBPin(int pin, bool pressed) {
     // pressed = true when pin goes LOW (switch activated)
 
     if (pin == 0) {
-        // PB0: BedLiftBee RAISE (toggle - send on flip ON, stop on flip OFF)
-        if (pressed) {
-            sendBedLiftCommand("raise", "BedUp");
-        } else {
-            sendBedLiftCommand("stop", "BedStop");
-        }
+        // PB0: MODE TOGGLE - switches between Mode A (green) and Mode B (red)
+        modeB = pressed;
+        Serial.printf("[Mode] Switched to Mode %s\n", modeB ? "B (RED)" : "A (GREEN)");
+        lastKey = modeB ? "ModeB" : "ModeA";
+        lastKeyTime = millis();
         return;
     }
 
     if (pin == 1) {
-        // PB1: BedLiftBee LOWER (toggle - send on flip ON, stop on flip OFF)
-        if (pressed) {
-            sendBedLiftCommand("lower", "BedDn");
-        } else {
-            sendBedLiftCommand("stop", "BedStop");
+        // PB1: MANUAL FAN MODE - when ON, GPIO4 pot controls fan speed
+        manualFanMode = pressed;
+        Serial.printf("[Fan] %s mode\n", manualFanMode ? "MANUAL (pot)" : "AUTO (SimHub)");
+        lastKey = manualFanMode ? "FanMan" : "FanAuto";
+        lastKeyTime = millis();
+        if (!manualFanMode && !windEnabled) {
+            setFanSpeed(0);  // Turn off if switching back to auto with wind disabled
         }
         return;
     }
 
     if (pin == 2) {
-        // PB2: BedLiftBee STOP (momentary - just send stop on press)
+        // PB2: Currently unassigned (was BedLift STOP)
         if (pressed) {
-            sendBedLiftCommand("stop", "BedStop");
+            Serial.println("[PB2] Unassigned - available for future use");
+            lastKey = "PB2";
+            lastKeyTime = millis();
         }
         return;
     }
@@ -465,28 +497,50 @@ void handlePots() {
     lastPotRead = millis();
 
     // Read MAX7219 view selector pot (GPIO 1)
-    int maxPotRaw = analogRead(POT_MAX_VIEW_PIN);
+    potMaxRaw = analogRead(POT_MAX_VIEW_PIN);
     // Map 0-4095 to 0-(NUM_VIEWS-1), with some deadband at edges
-    int newMaxView = map(maxPotRaw, 100, 3995, 0, NUM_VIEWS - 1);
+    int newMaxView = map(potMaxRaw, 100, 3995, 0, NUM_VIEWS - 1);
     newMaxView = constrain(newMaxView, 0, NUM_VIEWS - 1);
 
     if (newMaxView != lastMaxView) {
         lastMaxView = newMaxView;
         currentView = newMaxView;
         updateMaxDisplays();
-        Serial.printf("[POT] MAX view: %d (%s) raw=%d\n", currentView, viewNames[currentView], maxPotRaw);
+        Serial.printf("[POT] MAX view: %d (%s) raw=%d\n", currentView, viewNames[currentView], potMaxRaw);
     }
 
     // Read TFT view selector pot (GPIO 3)
-    int tftPotRaw = analogRead(POT_TFT_VIEW_PIN);
+    potTftRaw = analogRead(POT_TFT_VIEW_PIN);
     // Map 0-4095 to 0-(NUM_TFT_VIEWS-1)
-    int newTftView = map(tftPotRaw, 100, 3995, 0, NUM_TFT_VIEWS - 1);
+    int newTftView = map(potTftRaw, 100, 3995, 0, NUM_TFT_VIEWS - 1);
     newTftView = constrain(newTftView, 0, NUM_TFT_VIEWS - 1);
 
     if (newTftView != lastTftView) {
         lastTftView = newTftView;
         tftView = newTftView;
-        Serial.printf("[POT] TFT view: %d (%s) raw=%d\n", tftView, tftViewNames[tftView], tftPotRaw);
+        Serial.printf("[POT] TFT view: %d (%s) raw=%d\n", tftView, tftViewNames[tftView], potTftRaw);
+    }
+
+    // Always read fan pot (GPIO 4) for debug display
+    potFanRaw = analogRead(POT_FUTURE1_PIN);
+    
+    // Read 4th pot (GPIO 21) for debug display
+    pot4Raw = analogRead(POT_FUTURE2_PIN);
+    
+    // Only apply to fan control when in manual mode AND wind enabled
+    // Flow: A4 enables fans -> B1 switches between SimHub (auto) and pot (manual)
+    static int lastFanPotPercent = -1;
+    if (manualFanMode && windEnabled) {
+        // Map 0-4095 to 0-100%
+        int newFanPercent = map(potFanRaw, 100, 3995, 0, 100);
+        newFanPercent = constrain(newFanPercent, 0, 100);
+
+        // Only update if changed significantly (reduces noise)
+        if (abs(newFanPercent - lastFanPotPercent) > 2) {
+            lastFanPotPercent = newFanPercent;
+            setFanSpeed(newFanPercent);
+            Serial.printf("[POT] Manual fan: %d%% raw=%d\n", newFanPercent, potFanRaw);
+        }
     }
 }
 
@@ -568,12 +622,15 @@ void parseSimHubData(const char* data) {
     int val = udpParseInt(str, "speed=");
     if (val >= 0) {
         carSpeedKmh = val;
-        int fanPercent = map(carSpeedKmh, 0, FAN_MAX_SPEED_KMH, 0, 100);
-        fanPercent = constrain(fanPercent, 0, 100);
-        if (!fanTestMode && windEnabled) {
-            setFanSpeed(fanPercent);
-        } else if (!windEnabled) {
-            setFanSpeed(0);
+        // Only control fan from SimHub if NOT in manual mode
+        if (!manualFanMode) {
+            int fanPercent = map(carSpeedKmh, 0, FAN_MAX_SPEED_KMH, 0, 100);
+            fanPercent = constrain(fanPercent, 0, 100);
+            if (!fanTestMode && windEnabled) {
+                setFanSpeed(fanPercent);
+            } else if (!windEnabled) {
+                setFanSpeed(0);
+            }
         }
     }
 
@@ -967,19 +1024,23 @@ void drawDebugView() {
     // Center column: Port A/B indicators (vertical)
     int col2 = 100;
     spr.setTextColor(COLOR_TEXT);
-    spr.drawString("PORTS", col2, 5, 2);
+    // Show mode in header: Mode A (green) or Mode B (red)
+    spr.drawString(modeB ? "MODE B" : "MODE A", col2, 5, 2);
+
+    // Port indicator color: green in Mode A, red in Mode B
+    uint16_t activeColor = modeB ? TFT_RED : COLOR_ACCENT;
 
     spr.setTextColor(COLOR_DIM);
     spr.drawString("A", col2, 28, 1);
     for (int i = 0; i < 8; i++) {
         uint8_t bit = (currentPortA >> i) & 0x01;
-        spr.fillCircle(col2 + 15 + i * 12, 32, 4, (bit == 0) ? COLOR_ACCENT : COLOR_DIM);
+        spr.fillCircle(col2 + 15 + i * 12, 32, 4, (bit == 0) ? activeColor : COLOR_DIM);
     }
 
     spr.drawString("B", col2, 48, 1);
     for (int i = 0; i < 8; i++) {
         uint8_t bit = (currentPortB >> i) & 0x01;
-        spr.fillCircle(col2 + 15 + i * 12, 52, 4, (bit == 0) ? COLOR_ACCENT : COLOR_DIM);
+        spr.fillCircle(col2 + 15 + i * 12, 52, 4, (bit == 0) ? activeColor : COLOR_DIM);
     }
 
     // Last trigger
@@ -1021,6 +1082,39 @@ void drawDebugView() {
     spr.drawString("Lap", col3, 62, 1);
     spr.setTextColor(COLOR_TEXT);
     spr.drawString(String(currentLap) + "/" + String(totalLaps), col3 + 30, 62, 1);
+
+    // Pot values section (compact - all 4 pots on 2 lines)
+    spr.setTextColor(COLOR_TEXT);
+    spr.drawString("POTS", col3, 82, 2);
+
+    // Row 1: P1 (MAX) and P2 (TFT)
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("1:", col3, 102, 1);
+    spr.setTextColor(COLOR_TEXT);
+    spr.drawString(String(potMaxRaw), col3 + 12, 102, 1);
+    
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("2:", col3 + 50, 102, 1);
+    spr.setTextColor(COLOR_TEXT);
+    spr.drawString(String(potTftRaw), col3 + 62, 102, 1);
+
+    // Row 2: P3 (Fan/GPIO4) and P4 (GPIO12)
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("3:", col3, 117, 1);
+    spr.setTextColor(COLOR_TEXT);
+    spr.drawString(String(potFanRaw), col3 + 12, 117, 1);
+    
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("4:", col3 + 50, 117, 1);
+    spr.setTextColor(COLOR_TEXT);
+    spr.drawString(String(pot4Raw), col3 + 62, 117, 1);
+
+    // Manual fan mode indicator (bottom left, next to wind)
+    y = 140;
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("ManFan", col1, y, 1);
+    spr.setTextColor(manualFanMode ? COLOR_ACCENT : COLOR_WARN);
+    spr.drawString(manualFanMode ? "ON" : "OFF", col1 + 50, y, 1);
 }
 
 // Racing View - big speed, position, lap info
@@ -1076,7 +1170,82 @@ void drawRacingView() {
     }
 }
 
+// ============== Heart Animation ==============
+
+#define COLOR_HEART     0xF800  // Red
+#define COLOR_HEART_GLOW 0xFB2C // Light red/pink
+
+void drawHeart(int cx, int cy, int size, uint16_t color) {
+    // Heart shape: 2 circles for lobes + triangle for bottom
+    int r = size;
+    int lobeOffset = r * 0.7;
+    int lobeY = cy - r * 0.2;
+    int bottomY = cy + r * 1.5;
+    int edgeY = cy + r * 0.3;
+
+    // Fill the two upper lobes
+    spr.fillCircle(cx - lobeOffset, lobeY, r, color);
+    spr.fillCircle(cx + lobeOffset, lobeY, r, color);
+
+    // Fill the bottom triangle
+    spr.fillTriangle(cx - r * 1.4, edgeY, cx + r * 1.4, edgeY, cx, bottomY, color);
+
+    // Fill gap between circles and triangle
+    spr.fillRect(cx - lobeOffset, lobeY, lobeOffset * 2, edgeY - lobeY + 2, color);
+}
+
+void startHeartAnimation(const char* message) {
+    heartAnimActive = true;
+    heartAnimStart = millis();
+    heartMessage = message ? String(message) : "Love!";
+    Serial.printf("[Heart] Animation started: %s\n", heartMessage.c_str());
+}
+
+void drawHeartAnimation() {
+    // Pulsing heart animation
+    unsigned long elapsed = millis() - heartAnimStart;
+    
+    // End animation after duration
+    if (elapsed > HEART_ANIM_DURATION) {
+        heartAnimActive = false;
+        return;
+    }
+
+    spr.fillSprite(COLOR_BG);
+
+    // Pulsing scale (0.8 to 1.2)
+    float phase = (elapsed % 500) / 500.0 * 2.0 * PI;
+    float scale = 1.0 + 0.2 * sin(phase);
+    
+    int cx = SCREEN_WIDTH / 2;
+    int cy = SCREEN_HEIGHT / 2 - 20;
+    int baseSize = 20;
+    int size = (int)(baseSize * scale);
+
+    // Draw glow
+    drawHeart(cx, cy, size + 4, COLOR_HEART_GLOW);
+    // Draw heart
+    drawHeart(cx, cy, size, COLOR_HEART);
+
+    // Draw message
+    spr.setTextDatum(TC_DATUM);
+    spr.setTextColor(TFT_WHITE);
+    spr.drawString(heartMessage, cx, cy + 50, 2);
+
+    // Draw "From KayciBee" at bottom
+    spr.setTextColor(COLOR_DIM);
+    spr.drawString("From KayciBee", cx, SCREEN_HEIGHT - 20, 1);
+
+    spr.pushSprite(0, 0);
+}
+
 void drawScreen() {
+    // Heart animation takes over the whole screen
+    if (heartAnimActive) {
+        drawHeartAnimation();
+        return;
+    }
+
     spr.fillSprite(COLOR_BG);
 
     // Check master switch first
@@ -1093,10 +1262,11 @@ void drawScreen() {
         drawRacingView();
     }
 
-    // Footer with view indicator
+    // Footer with view indicator and mode
     spr.setTextDatum(TC_DATUM);
     spr.setTextColor(COLOR_DIM);
-    String footer = "v2.0.0  [" + String(tftViewNames[tftView]) + "]  BTN2=view";
+    String footer = "v2.1.0  [" + String(tftViewNames[tftView]) + "]";
+    if (manualFanMode) footer += "  FAN:MAN";
     spr.drawString(footer, SCREEN_WIDTH/2, SCREEN_HEIGHT - 12, 1);
 
     spr.pushSprite(0, 0);
@@ -1147,7 +1317,7 @@ void setup() {
     Serial.begin(115200);
     delay(500);
 
-    Serial.println("\n=== SimBee Keyboard v2.0.0 ===");
+    Serial.println("\n=== SimBee Keyboard v2.1.0 ===");
 
     // Display first so we can show status
     pinMode(TFT_BACKLIGHT, OUTPUT);
@@ -1220,12 +1390,20 @@ void setup() {
     Serial.println("[BLE] Ready for pairing!");
     
     // Setup MQTT (async - non-blocking)
-    topicState = "homecontrol/devices/" + String(DEVICE_ID) + "/state";
-    topicSet = "homecontrol/devices/" + String(DEVICE_ID) + "/set";
-    topicAvail = "homecontrol/devices/" + String(DEVICE_ID) + "/availability";
+    deviceId = getDeviceId();
+    Serial.printf("[MQTT] Device ID: %s\n", deviceId.c_str());
+    
+    String prefix = "homecontrol";
+    discoveryTopic = prefix + "/discovery/" + deviceId + "/config";
+    topicState = prefix + "/devices/" + deviceId + "/state";
+    topicSet = prefix + "/devices/" + deviceId + "/set";
+    topicAvail = prefix + "/devices/" + deviceId + "/availability";
+    topicHealth = prefix + "/devices/" + deviceId + "/health";
 
     mqtt.setServer(MQTT_SERVER, MQTT_PORT);
-    mqtt.setClientId(DEVICE_ID);
+    mqtt.setClientId(deviceId.c_str());
+    mqtt.setKeepAlive(60);  // Match KayciBee - 60 second keepalive
+    mqtt.setWill(topicAvail.c_str(), 1, true, "offline");  // LWT for offline detection
     mqtt.onConnect(onMqttConnect);
     mqtt.onDisconnect(onMqttDisconnect);
     mqtt.onMessage(onMqttMessage);
@@ -1249,6 +1427,14 @@ void setup() {
         // Initialize wind switch state from PA4 (LOW = ON/enabled)
         windEnabled = !(currentPortA & 0x10);
         Serial.printf("[Wind] Initial state: %s\n", windEnabled ? "ENABLED" : "DISABLED");
+
+        // Initialize mode B state from PB0 (LOW = ON/Mode B)
+        modeB = !(currentPortB & 0x01);
+        Serial.printf("[Mode] Initial state: Mode %s\n", modeB ? "B (RED)" : "A (GREEN)");
+
+        // Initialize manual fan mode from PB1 (LOW = ON/Manual)
+        manualFanMode = !(currentPortB & 0x02);
+        Serial.printf("[Fan] Initial state: %s\n", manualFanMode ? "MANUAL" : "AUTO");
 
         // Set initial TFT view based on master switch
         if (masterEnabled) {
@@ -1295,22 +1481,54 @@ bool isActuallyConnected() {
 
 void onMqttConnect(bool sessionPresent) {
     Serial.println("[MQTT] Connected!");
+    mqttConnected = true;
     mqtt.subscribe(topicSet.c_str(), 1);
     mqtt.publish(topicAvail.c_str(), 1, true, "online");
+    publishDiscovery();
     publishState();
 }
 
 void onMqttDisconnect(espMqttClientTypes::DisconnectReason reason) {
     Serial.printf("[MQTT] Disconnected, reason: %d\n", (int)reason);
+    mqttConnected = false;
 }
 
 void onMqttMessage(const espMqttClientTypes::MessageProperties& props, 
                    const char* topic, const uint8_t* payload, size_t len, 
                    size_t index, size_t total) {
-    String msg;
-    for (size_t i = 0; i < len; i++) msg += (char)payload[i];
-    Serial.printf("[MQTT] %s: %s\n", topic, msg.c_str());
-    // Handle commands here
+    Serial.printf("[MQTT] Message on %s (%d bytes)\n", topic, len);
+
+    // Simple JSON parsing for capability commands
+    // Looking for: {"capability":{"instance":"loveMessage","type":1,"message":"..."}}
+    
+    // Convert payload to string for parsing
+    char payloadStr[256];
+    size_t copyLen = len < sizeof(payloadStr) - 1 ? len : sizeof(payloadStr) - 1;
+    memcpy(payloadStr, payload, copyLen);
+    payloadStr[copyLen] = '\0';
+    
+    Serial.printf("[MQTT] Payload: %s\n", payloadStr);
+
+    // Check for loveMessage capability
+    if (strstr(payloadStr, "\"loveMessage\"") != nullptr) {
+        Serial.println("[MQTT] Love message received!");
+        
+        // Try to extract message field
+        const char* msgStart = strstr(payloadStr, "\"message\":\"");
+        char message[64] = "Love!";
+        if (msgStart) {
+            msgStart += 11;  // Skip past "message":"
+            const char* msgEnd = strchr(msgStart, '"');
+            if (msgEnd && (msgEnd - msgStart) < sizeof(message) - 1) {
+                strncpy(message, msgStart, msgEnd - msgStart);
+                message[msgEnd - msgStart] = '\0';
+            }
+        }
+        
+        startHeartAnimation(message);
+        lastKey = "Heart!";
+        lastKeyTime = millis();
+    }
 }
 
 void connectMQTT() {
@@ -1325,6 +1543,66 @@ void publishState() {
                   ",\"rssi\":" + String(WiFi.RSSI()) +
                   ",\"uptime\":" + String(millis() / 1000) + "}";
     mqtt.publish(topicState.c_str(), 0, false, json.c_str());
+}
+
+void publishDiscovery() {
+    if (!mqtt.connected()) return;
+    
+    // Build discovery JSON payload (matches KayciBee format)
+    char payload[512];
+    snprintf(payload, sizeof(payload),
+        "{"
+        "\"device_id\":\"%s\","
+        "\"name\":\"SimBee\","
+        "\"type\":\"%s\","
+        "\"model\":\"T-Display S3\","
+        "\"firmware_version\":\"%s\","
+        "\"ip_address\":\"%s\","
+        "\"has_display\":true,"
+        "\"display_size\":\"170x320\","
+        "\"capabilities\":[{\"type\":\"keyboard\",\"instance\":\"bleKeyboard\"}],"
+        "\"timestamp\":%lu"
+        "}",
+        deviceId.c_str(),
+        DEVICE_TYPE,
+        FIRMWARE_VERSION,
+        WiFi.localIP().toString().c_str(),
+        millis() / 1000
+    );
+    
+    mqtt.publish(discoveryTopic.c_str(), 1, true, payload);
+    Serial.printf("[MQTT] Published discovery (%d bytes)\n", strlen(payload));
+}
+
+void publishHealth() {
+    if (!mqtt.connected()) return;
+    
+    char payload[256];
+    snprintf(payload, sizeof(payload),
+        "{"
+        "\"uptime\":%lu,"
+        "\"wifi_rssi\":%d,"
+        "\"wifi_connected\":%s,"
+        "\"ble_connected\":%s,"
+        "\"heap\":%u,"
+        "\"ip\":\"%s\""
+        "}",
+        millis() / 1000,
+        WiFi.RSSI(),
+        WiFi.isConnected() ? "true" : "false",
+        isActuallyConnected() ? "true" : "false",
+        ESP.getFreeHeap(),
+        WiFi.localIP().toString().c_str()
+    );
+    
+    mqtt.publish(topicHealth.c_str(), 0, false, payload);
+}
+
+String getDeviceId() {
+    uint64_t chipid = ESP.getEfuseMac();
+    char id[13];
+    sprintf(id, "%04x%08x", (uint16_t)(chipid >> 32), (uint32_t)chipid);
+    return String(id);
 }
 
 void loop() {
@@ -1356,9 +1634,16 @@ void loop() {
     
     // Publish state every 30s
     static unsigned long lastPublish = 0;
-    if (mqtt.connected() && millis() - lastPublish > 30000) {
+    if (mqttConnected && millis() - lastPublish > 30000) {
         lastPublish = millis();
         publishState();
+    }
+    
+    // Publish health every 5s
+    static unsigned long lastHealthPublish = 0;
+    if (mqttConnected && millis() - lastHealthPublish > 5000) {
+        lastHealthPublish = millis();
+        publishHealth();
     }
     
     // BLE keep-alive: send null report every 2 seconds to prevent sleep
