@@ -1154,7 +1154,7 @@ void setup() {
     pinMode(TFT_POWER, OUTPUT);
     digitalWrite(TFT_POWER, HIGH);
     tft.init();
-    tft.setRotation(3);
+    tft.setRotation(1);  // Landscape, USB port on right side
     tft.fillScreen(COLOR_BG);
     tft.invertDisplay(true);
     digitalWrite(TFT_BACKLIGHT, HIGH);
