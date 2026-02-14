@@ -7,16 +7,15 @@
 .vscode/
 .idea/
 
-# Secrets - DO NOT COMMIT
-src/secrets.h
-include/secrets.h
-
 # Dependencies
 node_modules/
 
+# Secrets - DO NOT COMMIT
+include/secrets.h
+
+# Backups
+*.backup
+*.backup-*
+
 # OS files
 .DS_Store
-
-# Local tooling config
-.serena/
-CLAUDE.md

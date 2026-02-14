@@ -13,19 +13,14 @@
  *
  * Safety Features:
  * - HC-SR04 ultrasonic sensor for distance/position tracking
- * - Reed switch for limit detection (magnet at top or bottom)
- * - Auto-stop when limit reached or obstacle detected
- * - Auto-nudge: reverses briefly off the limit so opposite direction still works
- * - Directional limit: only blocks the direction that caused the limit
+ * - Reed switches for top/bottom limit detection
+ * - Auto-stop when limits reached or obstacle detected
  *
  * MQTT Commands:
  * - {"capability":{"instance":"bedLift","value":"raise"}}
  * - {"capability":{"instance":"bedLift","value":"lower"}}
  * - {"capability":{"instance":"bedLift","value":"stop"}}
- * - {"capability":{"instance":"bedLift","value":"sendToTop"}}
- * - {"capability":{"instance":"bedLift","value":"sendToBottom"}}
- * - {"capability":{"instance":"bedLift","value":"calibrate_top"}}
- * - {"capability":{"instance":"bedLift","value":"calibrate_bottom"}}
+ * - {"capability":{"instance":"bedLift","value":"calibrate"}}
  */
 
 #include <Arduino.h>
@@ -41,7 +36,7 @@
 // ============== Configuration ==============
 
 #define DEVICE_TYPE "esp32-c3-bedlift"
-#define FIRMWARE_VERSION "1.5.0-bedlift"
+#define FIRMWARE_VERSION "1.1.0-bedlift"
 #define DEFAULT_MQTT_PORT 1883
 
 // GPIO Pins - Relays
@@ -53,8 +48,9 @@
 #define ULTRASONIC_TRIG_PIN 4   // GPIO4 - Trigger
 #define ULTRASONIC_ECHO_PIN 5   // GPIO5 - Echo (use voltage divider!)
 
-// GPIO Pins - Reed Switch (single limit switch - stops all movement)
-#define REED_LIMIT_PIN 7   // GPIO7 - Limit switch (magnet at top OR bottom)
+// GPIO Pins - Reed Switches (limit switches)
+#define REED_TOP_PIN 6     // GPIO6 - Top limit (bed fully raised)
+#define REED_BOTTOM_PIN 7  // GPIO7 - Bottom limit (bed fully lowered)
 
 // Relay active state (most modules are active LOW)
 #define RELAY_ON LOW
@@ -62,12 +58,6 @@
 
 // Default lift duration in milliseconds
 #define DEFAULT_LIFT_DURATION 3000
-
-// Default nudge duration - auto-reverse off limit switch
-#define DEFAULT_NUDGE_DURATION 300
-
-// Max duration for send-to-limit mode (safety timeout)
-#define MAX_SEND_TO_LIMIT_DURATION 30000
 
 // Safety thresholds
 #define MIN_SAFE_DISTANCE_CM 10     // Stop if obstacle closer than this
@@ -96,8 +86,7 @@ struct DeviceConfig {
     char mqttUser[32];
     char mqttPass[32];
     char topicPrefix[32];
-    unsigned long liftDuration;   // milliseconds
-    unsigned long nudgeDuration;  // milliseconds - auto-reverse off limit
+    unsigned long liftDuration;  // milliseconds
 } config;
 
 struct DeviceState {
@@ -106,7 +95,6 @@ struct DeviceState {
     int rssi = 0;
     // Bed lift state
     bool isLifting = false;
-    bool sendToLimit = false;   // true = ignore timer, run until limit switch
     String liftDirection = "";  // "raise" or "lower"
     unsigned long liftStartTime = 0;
     bool relayUp = false;
@@ -114,11 +102,9 @@ struct DeviceState {
     // Safety sensors
     float distanceCm = 0;           // Current ultrasonic reading
     bool ultrasonicOk = false;      // Sensor connected and reading valid
-    bool atLimit = false;           // Reed switch triggered (at top OR bottom)
+    bool atTopLimit = false;        // Reed switch: at top
+    bool atBottomLimit = false;     // Reed switch: at bottom
     String lastStopReason = "";     // Why we stopped (timer/limit/obstacle/manual)
-    String limitDirection = "";     // Direction that caused limit ("raise"/"lower"/"")
-    bool isNudging = false;         // Auto-reversing off limit switch
-    unsigned long nudgeStartTime = 0;
     // Calibration data
     float calibratedTopCm = 0;      // Distance reading at top
     float calibratedBottomCm = 0;   // Distance reading at bottom
@@ -162,17 +148,14 @@ void loadConfig();
 void saveConfig();
 String getDeviceId();
 void setupWebServer();
-void startLift(const String& direction, bool toLimit = false);
+void startLift(const String& direction);
 void stopLift();
 void stopLift(const String& reason);
 void updateLift();
-// Nudge (auto-reverse off limit)
-void startNudge(const String& awayFrom);
-void updateNudge();
 // Safety sensors
 void setupSensors();
 float readUltrasonic();
-void readReedSwitch();
+void readReedSwitches();
 void updateSensors();
 bool isSafeToMove(const String& direction);
 void calibratePosition(const String& position);
@@ -257,14 +240,6 @@ void onMqttMessage(const espMqttClientTypes::MessageProperties& properties,
                 mqttLog("[CMD] STOP - Stopping bed lift\n");
                 stopLift("manual");
             }
-            else if (strcmp(value, "sendToTop") == 0) {
-                mqttLog("[CMD] SEND TO TOP - Raising until limit\n");
-                startLift("raise", true);
-            }
-            else if (strcmp(value, "sendToBottom") == 0) {
-                mqttLog("[CMD] SEND TO BOTTOM - Lowering until limit\n");
-                startLift("lower", true);
-            }
             else if (strcmp(value, "calibrate_top") == 0) {
                 Serial.println("[CMD] CALIBRATE TOP - Setting current position as top");
                 calibratePosition("top");
@@ -279,7 +254,7 @@ void onMqttMessage(const espMqttClientTypes::MessageProperties& properties,
 
 // ============== Bed Lift Control ==============
 
-void startLift(const String& direction, bool toLimit) {
+void startLift(const String& direction) {
     // Safety check before moving
     if (!isSafeToMove(direction)) {
         mqttLog("[LIFT] BLOCKED - Not safe to move %s\n", direction.c_str());
@@ -292,7 +267,6 @@ void startLift(const String& direction, bool toLimit) {
     state.liftDirection = direction;
     state.liftStartTime = millis();
     state.isLifting = true;
-    state.sendToLimit = toLimit;
     state.lastStopReason = "";
 
     if (direction == "raise") {
@@ -300,14 +274,14 @@ void startLift(const String& direction, bool toLimit) {
         digitalWrite(RELAY_DOWN_PIN, RELAY_OFF);
         state.relayUp = true;
         state.relayDown = false;
-        Serial.printf("[LIFT] Relay UP activated%s\n", toLimit ? " (send to limit)" : "");
+        Serial.println("[LIFT] Relay UP activated");
     }
     else if (direction == "lower") {
         digitalWrite(RELAY_UP_PIN, RELAY_OFF);
         digitalWrite(RELAY_DOWN_PIN, RELAY_ON);
         state.relayUp = false;
         state.relayDown = true;
-        Serial.printf("[LIFT] Relay DOWN activated%s\n", toLimit ? " (send to limit)" : "");
+        Serial.println("[LIFT] Relay DOWN activated");
     }
 
     // LED on while lifting
@@ -330,14 +304,7 @@ void stopLift(const String& reason) {
         state.lastStopReason = reason;
     }
 
-    if (state.isNudging) {
-        mqttLog("[NUDGE] Cancelled (reason: %s)\n", reason.c_str());
-        state.isNudging = false;
-        state.nudgeStartTime = 0;
-    }
-
     state.isLifting = false;
-    state.sendToLimit = false;
     state.liftDirection = "";
     state.liftStartTime = 0;
     state.relayUp = false;
@@ -352,32 +319,23 @@ void stopLift(const String& reason) {
 void updateLift() {
     if (!state.isLifting) return;
 
-    // Check timer
-    unsigned long elapsed = millis() - state.liftStartTime;
-    if (state.sendToLimit) {
-        // Safety timeout for send-to-limit mode
-        if (elapsed >= MAX_SEND_TO_LIMIT_DURATION) {
-            mqttLog("[SAFETY] Send-to-limit timeout (%lu ms) - limit switch may have failed!\n", MAX_SEND_TO_LIMIT_DURATION);
-            stopLift("safety_timeout");
-            return;
-        }
-    } else {
-        // Normal timed lift
-        if (elapsed >= config.liftDuration) {
-            Serial.printf("[LIFT] Timer expired (%lu ms)\n", config.liftDuration);
-            stopLift("timer");
-            return;
-        }
+    // Check if timer has expired
+    if (millis() - state.liftStartTime >= config.liftDuration) {
+        Serial.printf("[LIFT] Timer expired (%lu ms)\n", config.liftDuration);
+        stopLift("timer");
+        return;
     }
 
-    // Safety: Check limit switch (directional)
-    if (state.atLimit) {
-        if (state.limitDirection == "" || state.limitDirection == state.liftDirection) {
-            mqttLog("[SAFETY] Limit reached while %s!\n", state.liftDirection.c_str());
-            stopLift("limit");
-            return;
-        }
-        // Moving in opposite direction from limit - allow it
+    // Safety: Check limit switches
+    if (state.liftDirection == "raise" && state.atTopLimit) {
+        mqttLog("[SAFETY] Top limit reached!\n");
+        stopLift("top_limit");
+        return;
+    }
+    if (state.liftDirection == "lower" && state.atBottomLimit) {
+        mqttLog("[SAFETY] Bottom limit reached!\n");
+        stopLift("bottom_limit");
+        return;
     }
 
     // Safety: Check ultrasonic distance when lowering
@@ -398,10 +356,11 @@ void setupSensors() {
     pinMode(ULTRASONIC_ECHO_PIN, INPUT);
     digitalWrite(ULTRASONIC_TRIG_PIN, LOW);
 
-    // Single reed switch (with internal pullup - LOW when magnet present)
-    pinMode(REED_LIMIT_PIN, INPUT_PULLUP);
+    // Reed switches (with internal pullup - LOW when magnet present)
+    pinMode(REED_TOP_PIN, INPUT_PULLUP);
+    pinMode(REED_BOTTOM_PIN, INPUT_PULLUP);
 
-    Serial.println("[SENSORS] Initialized: Ultrasonic + Reed limit switch");
+    Serial.println("[SENSORS] Initialized: Ultrasonic + Reed switches");
 
     // Initial read
     updateSensors();
@@ -430,44 +389,21 @@ float readUltrasonic() {
     return distance;
 }
 
-void readReedSwitch() {
-    // Reed switch is normally-closed (NC) type - inverted logic
-    // NC switch: no magnet = LOW, magnet present = HIGH
-    bool limitTriggered = (digitalRead(REED_LIMIT_PIN) == HIGH);
+void readReedSwitches() {
+    // Reed switches are active LOW (connected to ground when magnet present)
+    bool topTriggered = (digitalRead(REED_TOP_PIN) == LOW);
+    bool bottomTriggered = (digitalRead(REED_BOTTOM_PIN) == LOW);
 
-    // Detect changes and log to MQTT
-    if (limitTriggered != state.atLimit) {
-        state.atLimit = limitTriggered;
-
-        if (limitTriggered) {
-            if (state.isLifting) {
-                // Record which direction caused the limit before stopping
-                String hitDirection = state.liftDirection;
-                state.limitDirection = hitDirection;
-                mqttLog("[REED] %s limit hit - stopping and nudging back\n", hitDirection.c_str());
-                stopLift("limit");
-                startNudge(hitDirection);
-            } else if (state.isNudging) {
-                // Limit re-triggered during nudge - stop everything
-                mqttLog("[REED] Limit triggered during nudge - emergency stop\n");
-                state.limitDirection = "";
-                stopLift("limit_during_nudge");
-            } else {
-                // Triggered without active movement (manual push or boot)
-                state.limitDirection = "";
-                mqttLog("[REED] Limit triggered (no active movement)\n");
-            }
-        } else {
-            // Limit cleared - reset directional lock
-            mqttLog("[REED] Limit cleared\n");
-            state.limitDirection = "";
-        }
+    // Detect changes
+    if (topTriggered != state.atTopLimit) {
+        state.atTopLimit = topTriggered;
+        Serial.printf("[REED] Top limit: %s\n", topTriggered ? "TRIGGERED" : "clear");
+    }
+    if (bottomTriggered != state.atBottomLimit) {
+        state.atBottomLimit = bottomTriggered;
+        Serial.printf("[REED] Bottom limit: %s\n", bottomTriggered ? "TRIGGERED" : "clear");
     }
 }
-
-// Ultrasonic debouncing (kept for future use, but logging disabled)
-int ultrasonicFailCount = 0;
-#define ULTRASONIC_FAIL_THRESHOLD 5  // Must fail 5x in a row to go offline
 
 void updateSensors() {
     // Read ultrasonic at intervals (avoid blocking too often)
@@ -475,56 +411,33 @@ void updateSensors() {
         lastUltrasonicRead = millis();
 
         float distance = readUltrasonic();
-        bool wasOk = state.ultrasonicOk;
-
         if (distance > 0) {
-            // Good reading - update distance and reset fail counter
             state.distanceCm = distance;
-            ultrasonicFailCount = 0;
             state.ultrasonicOk = true;
         } else {
-            // Bad reading - increment fail counter
-            ultrasonicFailCount++;
-
-            // Only mark offline after multiple consecutive failures
-            if (ultrasonicFailCount >= ULTRASONIC_FAIL_THRESHOLD) {
-                state.ultrasonicOk = false;
-            }
-            // Keep last good distance reading (don't clear it)
+            state.ultrasonicOk = false;
         }
 
         // Update position percentage if calibrated
         state.positionPercent = calculatePositionPercent();
-
-        // Ultrasonic logging disabled - using reed switches for limits
     }
 
-    // Reed switch can be read every loop (it's fast)
-    readReedSwitch();
+    // Reed switches can be read every loop (they're fast)
+    readReedSwitches();
 }
 
 bool isSafeToMove(const String& direction) {
-    // Don't allow new movement during nudge
-    if (state.isNudging) {
-        Serial.println("[SAFETY] Nudge in progress - cannot move");
+    // Check limit switches
+    if (direction == "raise" && state.atTopLimit) {
+        Serial.println("[SAFETY] Already at top limit");
+        return false;
+    }
+    if (direction == "lower" && state.atBottomLimit) {
+        Serial.println("[SAFETY] Already at bottom limit");
         return false;
     }
 
-    // Check limit switch with directional awareness
-    if (state.atLimit) {
-        if (state.limitDirection == "" || state.limitDirection == direction) {
-            // Unknown direction or same direction that caused limit - block
-            Serial.printf("[SAFETY] At %s limit - cannot %s\n",
-                state.limitDirection.length() ? state.limitDirection.c_str() : "unknown",
-                direction.c_str());
-            return false;
-        }
-        // Moving opposite from limit - allow
-        Serial.printf("[SAFETY] At %s limit - allowing %s (opposite)\n",
-            state.limitDirection.c_str(), direction.c_str());
-    }
-
-    // Check ultrasonic when lowering (if sensor is working)
+    // Check ultrasonic when lowering
     if (direction == "lower" && state.ultrasonicOk) {
         if (state.distanceCm > 0 && state.distanceCm < MIN_SAFE_DISTANCE_CM) {
             Serial.printf("[SAFETY] Obstacle below! Distance: %.1f cm\n", state.distanceCm);
@@ -579,44 +492,6 @@ int calculatePositionPercent() {
     return percent;
 }
 
-// ============== Nudge (Auto-Reverse Off Limit) ==============
-
-void startNudge(const String& awayFrom) {
-    state.isNudging = true;
-    state.nudgeStartTime = millis();
-
-    // Nudge in the opposite direction
-    if (awayFrom == "lower") {
-        digitalWrite(RELAY_UP_PIN, RELAY_ON);
-        digitalWrite(RELAY_DOWN_PIN, RELAY_OFF);
-    } else {
-        digitalWrite(RELAY_UP_PIN, RELAY_OFF);
-        digitalWrite(RELAY_DOWN_PIN, RELAY_ON);
-    }
-
-    // LED on during nudge
-    digitalWrite(LED_PIN, LOW);
-
-    mqttLog("[NUDGE] Backing off %s limit (%lu ms)\n", awayFrom.c_str(), config.nudgeDuration);
-}
-
-void updateNudge() {
-    if (!state.isNudging) return;
-
-    if (millis() - state.nudgeStartTime >= config.nudgeDuration) {
-        digitalWrite(RELAY_UP_PIN, RELAY_OFF);
-        digitalWrite(RELAY_DOWN_PIN, RELAY_OFF);
-
-        state.isNudging = false;
-        state.nudgeStartTime = 0;
-
-        digitalWrite(LED_PIN, HIGH);
-
-        mqttLog("[NUDGE] Complete - reed %s\n", state.atLimit ? "still triggered" : "cleared");
-        publishState();
-    }
-}
-
 // ============== Setup ==============
 
 void setup() {
@@ -654,13 +529,11 @@ void setup() {
     WiFiManagerParameter mqttPortParam("mqtt_port", "MQTT Port", String(config.mqttPort).c_str(), 6);
     WiFiManagerParameter deviceNameParam("device_name", "Device Name", config.deviceName, 32);
     WiFiManagerParameter liftDurationParam("lift_duration", "Lift Duration (ms)", String(config.liftDuration).c_str(), 8);
-    WiFiManagerParameter nudgeDurationParam("nudge_duration", "Nudge Duration (ms)", String(config.nudgeDuration).c_str(), 8);
 
     wifiManager.addParameter(&mqttServerParam);
     wifiManager.addParameter(&mqttPortParam);
     wifiManager.addParameter(&deviceNameParam);
     wifiManager.addParameter(&liftDurationParam);
-    wifiManager.addParameter(&nudgeDurationParam);
 
     String apName = "BedLiftBee-Setup-" + deviceId.substring(deviceId.length() - 4);
     wifiManager.setConfigPortalTimeout(180);
@@ -678,8 +551,6 @@ void setup() {
     strcpy(config.deviceName, deviceNameParam.getValue());
     config.liftDuration = atoi(liftDurationParam.getValue());
     if (config.liftDuration < 500) config.liftDuration = DEFAULT_LIFT_DURATION;
-    config.nudgeDuration = atoi(nudgeDurationParam.getValue());
-    if (config.nudgeDuration < 50) config.nudgeDuration = DEFAULT_NUDGE_DURATION;
     saveConfig();
 
     Serial.printf("WiFi connected! IP: %s\n", WiFi.localIP().toString().c_str());
@@ -721,9 +592,6 @@ void loop() {
 
     // Update bed lift timer (includes safety checks)
     updateLift();
-
-    // Update nudge timer (auto-reverse off limit)
-    updateNudge();
 
     // Reconnect MQTT if needed
     if (!state.mqttConnected && WiFi.isConnected()) {
@@ -811,14 +679,6 @@ void publishDiscovery() {
     opt3["name"] = "Stop";
     opt3["value"] = "stop";
 
-    JsonObject opt4 = options.add<JsonObject>();
-    opt4["name"] = "Send to Top";
-    opt4["value"] = "sendToTop";
-
-    JsonObject opt5 = options.add<JsonObject>();
-    opt5["name"] = "Send to Bottom";
-    opt5["value"] = "sendToBottom";
-
     doc["sensors"] = JsonArray();
     doc["timestamp"] = state.uptime;
 
@@ -833,7 +693,6 @@ void publishState() {
     JsonDocument doc;
 
     doc["isLifting"] = state.isLifting;
-    doc["sendToLimit"] = state.sendToLimit;
     doc["direction"] = state.liftDirection;
     doc["relayUp"] = state.relayUp;
     doc["relayDown"] = state.relayDown;
@@ -846,11 +705,10 @@ void publishState() {
     // Safety sensor data
     doc["distanceCm"] = state.distanceCm;
     doc["ultrasonicOk"] = state.ultrasonicOk;
-    doc["atLimit"] = state.atLimit;
+    doc["atTopLimit"] = state.atTopLimit;
+    doc["atBottomLimit"] = state.atBottomLimit;
     doc["positionPercent"] = state.positionPercent;
     doc["lastStopReason"] = state.lastStopReason;
-    doc["limitDirection"] = state.limitDirection;
-    doc["isNudging"] = state.isNudging;
 
     if (state.isLifting) {
         unsigned long remaining = config.liftDuration - (millis() - state.liftStartTime);
@@ -884,7 +742,8 @@ void publishHealth() {
     // Safety sensor data
     doc["distanceCm"] = state.distanceCm;
     doc["ultrasonicOk"] = state.ultrasonicOk;
-    doc["atLimit"] = state.atLimit;
+    doc["atTopLimit"] = state.atTopLimit;
+    doc["atBottomLimit"] = state.atBottomLimit;
     doc["positionPercent"] = state.positionPercent;
 
     String payload;
@@ -1022,11 +881,6 @@ void setupWebServer() {
                 <button class="btn btn-lower" onclick="fetch('/lift?dir=lower').then(()=>location.reload())">LOWER</button>
                 <button class="btn btn-stop btn-full" onclick="fetch('/lift?dir=stop').then(()=>location.reload())">STOP</button>
             </div>
-            <h3 style="margin-top:15px;margin-bottom:10px;color:#888;">Send to Limit</h3>
-            <div class="btn-grid">
-                <button class="btn btn-raise" onclick="fetch('/lift?dir=sendToTop').then(()=>location.reload())">SEND TO TOP</button>
-                <button class="btn btn-lower" onclick="fetch('/lift?dir=sendToBottom').then(()=>location.reload())">SEND TO BOTTOM</button>
-            </div>
         </div>
 
         <a href="/config" class="btn btn-secondary">Settings</a>
@@ -1073,10 +927,6 @@ void setupWebServer() {
                 <input type="number" name="lift_duration" value=")rawhtml";
         html += String(config.liftDuration);
         html += R"rawhtml(">
-                <label>Nudge Duration (milliseconds)</label>
-                <input type="number" name="nudge_duration" value=")rawhtml";
-        html += String(config.nudgeDuration);
-        html += R"rawhtml(">
             </div>
             <div class="card">
                 <h3 style="margin-top:0;color:#888;">MQTT</h3>
@@ -1115,10 +965,6 @@ void setupWebServer() {
             config.liftDuration = request->getParam("lift_duration", true)->value().toInt();
             if (config.liftDuration < 500) config.liftDuration = DEFAULT_LIFT_DURATION;
         }
-        if (request->hasParam("nudge_duration", true)) {
-            config.nudgeDuration = request->getParam("nudge_duration", true)->value().toInt();
-            if (config.nudgeDuration < 50) config.nudgeDuration = DEFAULT_NUDGE_DURATION;
-        }
 
         saveConfig();
         request->redirect("/");
@@ -1139,12 +985,6 @@ void setupWebServer() {
             } else if (dir == "stop") {
                 stopLift();
                 request->send(200, "text/plain", "STOPPED");
-            } else if (dir == "sendToTop") {
-                startLift("raise", true);
-                request->send(200, "text/plain", "SENDING TO TOP");
-            } else if (dir == "sendToBottom") {
-                startLift("lower", true);
-                request->send(200, "text/plain", "SENDING TO BOTTOM");
             } else {
                 request->send(400, "text/plain", "Invalid direction");
             }
@@ -1182,7 +1022,8 @@ void setupWebServer() {
         // Safety sensors
         doc["distanceCm"] = state.distanceCm;
         doc["ultrasonicOk"] = state.ultrasonicOk;
-        doc["atLimit"] = state.atLimit;
+        doc["atTopLimit"] = state.atTopLimit;
+        doc["atBottomLimit"] = state.atBottomLimit;
         doc["positionPercent"] = state.positionPercent;
         doc["lastStopReason"] = state.lastStopReason;
         doc["calibratedTopCm"] = state.calibratedTopCm;
@@ -1229,7 +1070,6 @@ void loadConfig() {
 
     config.mqttPort = preferences.getInt("mqttPort", DEFAULT_MQTT_PORT);
     config.liftDuration = preferences.getULong("liftDuration", DEFAULT_LIFT_DURATION);
-    config.nudgeDuration = preferences.getULong("nudgeDuration", DEFAULT_NUDGE_DURATION);
 
     preferences.getString("mqttUser", config.mqttUser, sizeof(config.mqttUser));
     preferences.getString("mqttPass", config.mqttPass, sizeof(config.mqttPass));
@@ -1241,8 +1081,8 @@ void loadConfig() {
 
     preferences.end();
 
-    Serial.printf("[Config] Loaded: name=%s, mqtt=%s:%d, duration=%lu, nudge=%lu\n",
-                  config.deviceName, config.mqttServer, config.mqttPort, config.liftDuration, config.nudgeDuration);
+    Serial.printf("[Config] Loaded: name=%s, mqtt=%s:%d, duration=%lu\n",
+                  config.deviceName, config.mqttServer, config.mqttPort, config.liftDuration);
 }
 
 void saveConfig() {
@@ -1251,7 +1091,6 @@ void saveConfig() {
     preferences.putString("mqttServer", config.mqttServer);
     preferences.putInt("mqttPort", config.mqttPort);
     preferences.putULong("liftDuration", config.liftDuration);
-    preferences.putULong("nudgeDuration", config.nudgeDuration);
     preferences.putString("mqttUser", config.mqttUser);
     preferences.putString("mqttPass", config.mqttPass);
     preferences.putString("topicPrefix", config.topicPrefix);
